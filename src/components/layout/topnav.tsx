@@ -41,7 +41,7 @@ import { useState, useEffect } from "react";
 import { patients, doctors, appointments, invoices, medicines } from "@/lib/data";
 
 export function TopNav() {
-  const { toggleSidebar, setMobileSidebar, theme, toggleTheme, activeBranch, setActiveBranch, setGlobalSearch, setActiveModule, selectPatient } = useAppStore();
+  const { toggleSidebar, setMobileSidebar, theme, toggleTheme, activeBranch, setActiveBranch, setGlobalSearch, setActiveModule, selectPatient, logout, currentUser } = useAppStore();
   const [searchOpen, setSearchOpen] = useState(false);
   const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -194,11 +194,11 @@ export function TopNav() {
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" className="gap-2 h-9 px-2">
             <Avatar className="h-7 w-7">
-              <AvatarFallback className="bg-primary text-primary-foreground text-xs">AS</AvatarFallback>
+              <AvatarFallback className="bg-primary text-primary-foreground text-xs">{currentUser.avatar}</AvatarFallback>
             </Avatar>
             <div className="hidden lg:block text-left">
-              <p className="text-xs font-semibold leading-none">Dr. Aditya</p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">Admin</p>
+              <p className="text-xs font-semibold leading-none">{currentUser.name.split(" ").slice(0, 2).join(" ")}</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">{currentUser.role}</p>
             </div>
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground hidden lg:block" />
           </Button>
@@ -206,8 +206,8 @@ export function TopNav() {
         <DropdownMenuContent align="end" className="w-56">
           <DropdownMenuLabel>
             <div>
-              <p className="text-sm font-semibold">Dr. Aditya Sharma</p>
-              <p className="text-xs text-muted-foreground font-normal">aditya.sharma@medicore.com</p>
+              <p className="text-sm font-semibold">{currentUser.name}</p>
+              <p className="text-xs text-muted-foreground font-normal">{currentUser.email}</p>
             </div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
@@ -218,7 +218,7 @@ export function TopNav() {
             <Settings className="mr-2 h-4 w-4" /> Settings
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-destructive">
+          <DropdownMenuItem className="text-destructive" onClick={logout}>
             <LogOut className="mr-2 h-4 w-4" /> Sign out
           </DropdownMenuItem>
         </DropdownMenuContent>

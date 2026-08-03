@@ -3,6 +3,7 @@
 import { useAppStore } from "@/store/app-store";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopNav } from "@/components/layout/topnav";
+import { LoginPanel } from "@/components/auth/login-panel";
 import { DashboardModule } from "@/components/modules/dashboard";
 import { PatientsModule } from "@/components/modules/patients";
 import { DoctorsModule } from "@/components/modules/doctors";
@@ -15,7 +16,12 @@ import { ReportsModule, StaffModule, InventoryModule, SettingsModule, ReceptionM
 import { motion, AnimatePresence } from "framer-motion";
 
 export default function Home() {
-  const { activeModule } = useAppStore();
+  const { activeModule, isAuthenticated } = useAppStore();
+
+  // Show login panel if not authenticated
+  if (!isAuthenticated) {
+    return <LoginPanel />;
+  }
 
   const renderModule = () => {
     switch (activeModule) {

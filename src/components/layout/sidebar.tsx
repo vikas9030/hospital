@@ -14,7 +14,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isMobile = false }: SidebarProps) {
-  const { activeModule, setActiveModule, sidebarCollapsed, mobileSidebarOpen, setMobileSidebar } = useAppStore();
+  const { activeModule, setActiveModule, sidebarCollapsed, mobileSidebarOpen, setMobileSidebar, currentUser } = useAppStore();
 
   if (isMobile && !mobileSidebarOpen) return null;
 
@@ -118,11 +118,11 @@ export function Sidebar({ isMobile = false }: SidebarProps) {
             <div className="rounded-xl bg-gradient-to-br from-primary/10 to-info/10 p-3">
               <div className="flex items-center gap-2.5">
                 <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-semibold">
-                  AS
+                  {currentUser.avatar}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold truncate">Dr. Aditya Sharma</p>
-                  <p className="text-[11px] text-muted-foreground truncate">Hospital Admin</p>
+                  <p className="text-sm font-semibold truncate">{currentUser.name}</p>
+                  <p className="text-[11px] text-muted-foreground truncate">{currentUser.role}</p>
                 </div>
               </div>
             </div>

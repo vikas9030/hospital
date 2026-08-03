@@ -1,7 +1,19 @@
 import { create } from "zustand";
 import type { ModuleKey, Role } from "@/lib/types";
 
+interface User {
+  name: string;
+  role: Role;
+  email: string;
+  avatar: string;
+}
+
 interface AppState {
+  // Auth
+  isAuthenticated: boolean;
+  authMode: "login" | "otp" | "forgot" | "mfa";
+  currentUser: User;
+
   // Navigation
   activeModule: ModuleKey;
   selectedPatientId: string | null;
@@ -16,15 +28,10 @@ interface AppState {
   // Branch
   activeBranch: string;
 
-  // Auth (mock)
-  currentUser: {
-    name: string;
-    role: Role;
-    email: string;
-    avatar: string;
-  };
-
   // Actions
+  login: (user?: Partial<User>) => void;
+  logout: () => void;
+  setAuthMode: (mode: "login" | "otp" | "forgot" | "mfa") => void;
   setActiveModule: (module: ModuleKey) => void;
   selectPatient: (patientId: string | null) => void;
   selectDoctor: (doctorId: string | null) => void;
@@ -35,7 +42,19 @@ interface AppState {
   setActiveBranch: (branch: string) => void;
 }
 
+// Demo users for quick login
+const demoUsers: Record<string, User> = {
+  admin: { name: "Dr. Aditya Sharma", role: "Hospital Admin", email: "aditya.sharma@medicore.com", avatar: "AS" },
+  doctor: { name: "Dr. Rajesh Kumar", role: "Doctor", email: "rajesh.kumar@medicore.com", avatar: "RK" },
+  reception: { name: "Anita Kumar", role: "Receptionist", email: "anita.k@medicore.com", avatar: "AK" },
+  nurse: { name: "Lakshmi Nair", role: "Nurse", email: "lakshmi.n@medicore.com", avatar: "LN" },
+  pharmacist: { name: "Raj Patel", role: "Pharmacist", email: "raj.p@medicore.com", avatar: "RP" },
+};
+
 export const useAppStore = create<AppState>((set) => ({
+  isAuthenticated: false,
+  authMode: "login",
+
   activeModule: "dashboard",
   selectedPatientId: null,
   selectedDoctorId: null,
@@ -47,13 +66,16 @@ export const useAppStore = create<AppState>((set) => ({
 
   activeBranch: "MediCore Main Campus",
 
-  currentUser: {
-    name: "Dr. Aditya Sharma",
-    role: "Hospital Admin",
-    email: "aditya.sharma@medicore.com",
-    avatar: "AS",
-  },
+  currentUser: demoUsers.admin,
 
+  login: (user) =>
+    set((s) => ({
+      isAuthenticated: true,
+      authMode: "login",
+      currentUser: user ? { ...s.currentUser, ...user } : s.currentUser,
+    })),
+  logout: () => set({ isAuthenticated: false, authMode: "login", activeModule: "dashboard" }),
+  setAuthMode: (mode) => set({ authMode: mode }),
   setActiveModule: (module) =>
     set({ activeModule: module, selectedPatientId: null, selectedDoctorId: null, mobileSidebarOpen: false }),
   selectPatient: (patientId) => set({ selectedPatientId: patientId }),
@@ -71,3 +93,5 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   setActiveBranch: (branch) => set({ activeBranch: branch }),
 }));
+
+export { demoUsers };
