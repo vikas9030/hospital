@@ -203,3 +203,22 @@
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
+
+/* Mobile: wide tables scroll horizontally instead of breaking layout */
+@media (max-width: 1023.5px) {
+  div:has(> table) { overflow-x: auto; }
+  div:has(> table) table { min-width: 560px; }
+}
+
+
+/* Mobile: never allow page-level sideways scroll; inner regions scroll themselves */
+@media (max-width: 1023.5px) {
+  main { overflow-x: clip; }
+}
+
+
+/* Mobile: dialogs never exceed the viewport; content scrolls inside */
+@media (max-width: 639.5px) {
+  [role="dialog"] { max-height: 92dvh !important; overflow-y: auto; }
+}
+

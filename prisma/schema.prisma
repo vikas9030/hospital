@@ -9,24 +9,58 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider  = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  name              String
+  password_hash      String
+  role              String    @default("Staff")
+  avatar            String?
+  branch            String?
+  branch_id          String?
+  staff_id           String?   @unique
+  must_change_password Boolean   @default(false)
+  status            String    @default("Active")
+  shift             String    @default("Morning")
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @updatedAt
+
+  auditLogs AuditLog[] @relation("ActorAuditLogs")
+}
+
+model Branch {
   id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
+  name      String   @unique
+  location  String
+  patients  Int      @default(0)
+  revenue   Float    @default(0)
+  staff     Int      @default(0)
+  status    String   @default("Active")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
-model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorId     String   @map("actor_id")
+  actor       User     @relation("ActorAuditLogs", fields: [actorId], references: [id])
+  actor_email  String
+  action      String
+  target      String?
+  branch      String
+  details     String
+  ip          String?
+  timestamp   DateTime @default(now())
+}
+
+model SystemState {
+  id           String   @id @default("singleton")
+  initialized  Boolean  @default(false)
+  version      String   @default("1.0.0")
+  updatedAt    DateTime @updatedAt
 }

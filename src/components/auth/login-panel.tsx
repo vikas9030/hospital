@@ -1,83 +1,211 @@
 "use client";
 
-import { useState } from "react";
-import { useAppStore, demoUsers } from "@/store/app-store";
+import { useEffect, useState } from "react";
+import { useAppStore } from "@/store/app-store";
+import {
+  isTwoFactorEnabled, isIpWhitelistEnabled, parseAllowlist, ipAllowed, fetchClientIp,
+} from "@/lib/security";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Heart, Mail, Lock, Eye, EyeOff, ArrowRight, ArrowLeft,
-  ShieldCheck, Fingerprint, KeyRound, Smartphone, CheckCircle2,
-  Stethoscope, Activity, BedDouble, Pill, Users, Building2,
+  ShieldCheck, KeyRound,
+  Stethoscope, Activity, BedDouble, Users, Building2,
   Sun, Moon, Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useBranding, loginThemeOf } from "@/lib/branding";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
-const quickRoles: { key: keyof typeof demoUsers; label: string; icon: typeof Users; color: string }[] = [
-  { key: "admin", label: "Admin", icon: ShieldCheck, color: "bg-primary/10 text-primary" },
-  { key: "doctor", label: "Doctor", icon: Stethoscope, color: "bg-success/10 text-success" },
-  { key: "reception", label: "Reception", icon: Users, color: "bg-info/10 text-info" },
-  { key: "nurse", label: "Nurse", icon: Activity, color: "bg-warning/10 text-warning" },
-  { key: "pharmacist", label: "Pharmacy", icon: Pill, color: "bg-destructive/10 text-destructive" },
-];
+interface OtpInfo {
+  delivered: "email" | "sms" | "none";
+  destination?: string;
+  hint?: string;
+  devCode?: string;
+}
+
+async function auditSecurity(entry: { actor: string; actorEmail: string; action: string; branch: string; details: string }) {
+  useAppStore.getState().addAuditLog({ ...entry, target: "security" });
+  try {
+    await fetch("/api/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...entry, target: "security" }),
+    });
+  } catch {
+    // Server audit is best-effort.
+  }
+}
 
 export function LoginPanel() {
   const { authMode, setAuthMode, login, theme, toggleTheme } = useAppStore();
+  const storeBranches = useAppStore((s) => s.branches);
   const { toast } = useToast();
-  const [email, setEmail] = useState("aditya.sharma@medicore.com");
-  const [password, setPassword] = useState("medicore123");
+  const branding = useBranding();
+  const theme_ = loginThemeOf(branding);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [selectedBranch, setSelectedBranch] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [otp, setOtp] = useState("");
-  const [selectedRole, setSelectedRole] = useState<keyof typeof demoUsers>("admin");
+  const [loginError, setLoginError] = useState("");
+  // Two-factor step state (Settings → Security → Two-Factor Authentication).
+  const [step, setStep] = useState<"credentials" | "otp">("credentials");
+  const [pendingUser, setPendingUser] = useState<any>(null);
+  const [otpCode, setOtpCode] = useState("");
+  const [otpInfo, setOtpInfo] = useState<OtpInfo | null>(null);
+  const [otpError, setOtpError] = useState("");
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [coolUntil, setCoolUntil] = useState(0);
+  const [nowTick, setNowTick] = useState(Date.now());
+
+  useEffect(() => {
+    if (step !== "otp") return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [step]);
+
+  // Admins leave this empty and get all-branch access; staff must pick theirs
+  // (required — every record they save is pinned to that branch).
+  const effectiveBranch = selectedBranch;
+
+  const finishLogin = async (user: any, via2FA: boolean) => {
+    const ip = await fetchClientIp();
+    login({
+      name: user.name,
+      role: user.role,
+      email: user.email,
+      avatar: user.avatar,
+      // Fall back to the account's own branch when none was selected, so
+      // staff land on their branch dashboard directly.
+      branch: effectiveBranch || user.branch || "",
+      branchId: user.branchId,
+      password: user.password,
+      mustChangePassword: user.mustChangePassword,
+      staffId: user.staffId,
+    });
+    await auditSecurity({
+      actor: user.name,
+      actorEmail: user.email,
+      action: via2FA ? "LOGIN_2FA_SUCCESS" : "LOGIN_SUCCESS",
+      branch: effectiveBranch || user.branch || "",
+      details: `${user.name} signed in${via2FA ? " with two-factor verification" : ""} from IP ${ip}.`,
+    });
+    toast({
+      title: "Welcome back!",
+      description: `Logged in as ${user.name} (${user.role})`,
+    });
+  };
+
+  const requestOtp = async (addr: string): Promise<boolean> => {
+    setOtpError("");
+    setOtpLoading(true);
+    try {
+      const res = await fetch("/api/auth/otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "request", email: addr }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not send the verification code.");
+      setOtpInfo({ delivered: body.delivered, destination: body.destination, hint: body.hint, devCode: body.devCode });
+      setCoolUntil(Date.now() + 45000);
+      return true;
+    } catch (e: any) {
+      setOtpError(e.message);
+      return false;
+    } finally {
+      setOtpLoading(false);
+    }
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
+    setLoginError("");
     setLoading(true);
-    setTimeout(() => {
+    (async () => {
+      try {
+        // Fetch the latest login accounts first, so staff created by the
+        // admin on another device can sign in here directly.
+        await useAppStore.getState().refreshUsers();
+      } catch {
+        // Offline: fall back to locally cached accounts.
+      }
+      const st = useAppStore.getState();
+      const result = st.authenticateUser(email.trim().toLowerCase(), password, effectiveBranch);
+      if (!result.success) {
+        setLoginError(result.error || "Login failed.");
+        setLoading(false);
+        return;
+      }
+      const user = result.user!;
+      // IP whitelist enforcement (Settings → Security).
+      if (isIpWhitelistEnabled(st.settings)) {
+        const ip = await fetchClientIp();
+        const list = parseAllowlist(st.settings["security_ip_allowlist"]);
+        if (!ipAllowed(ip, list)) {
+          await auditSecurity({
+            actor: user.name,
+            actorEmail: user.email,
+            action: "SECURITY_IP_BLOCKED",
+            branch: effectiveBranch || user.branch || "",
+            details: `Blocked sign-in for ${user.name} from non-allowlisted IP ${ip}.`,
+          });
+          setLoginError(`Access denied: your IP (${ip}) is not allowlisted. Ask an admin to add it in Settings → Security → IP Whitelisting.`);
+          setLoading(false);
+          return;
+        }
+      }
+      // Two-factor challenge when enabled.
+      if (isTwoFactorEnabled(st.settings)) {
+        const ok = await requestOtp(user.email);
+        setLoading(false);
+        if (ok) {
+          setPendingUser(user);
+          setOtpCode("");
+          setStep("otp");
+        }
+        return;
+      }
+      await finishLogin(user, false);
       setLoading(false);
-      login(demoUsers[selectedRole]);
-      toast({
-        title: "Welcome back!",
-        description: `Logged in as ${demoUsers[selectedRole].name}`,
-      });
-    }, 1200);
+    })();
   };
 
-  const handleOtpLogin = () => {
-    setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
-      login(demoUsers[selectedRole]);
-      toast({
-        title: "OTP Verified!",
-        description: `Logged in as ${demoUsers[selectedRole].name}`,
+  const handleVerifyOtp = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (otpCode.trim().length !== 6 || !pendingUser) return;
+    setOtpError("");
+    setOtpLoading(true);
+    try {
+      const res = await fetch("/api/auth/otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "verify", email: pendingUser.email, code: otpCode.trim() }),
       });
-    }, 1000);
-  };
-
-  const handleQuickLogin = (roleKey: keyof typeof demoUsers) => {
-    setSelectedRole(roleKey);
-    setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
-      login(demoUsers[roleKey]);
-      toast({
-        title: "Welcome back!",
-        description: `Logged in as ${demoUsers[roleKey].name} (${demoUsers[roleKey].role})`,
-      });
-    }, 800);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Verification failed.");
+      const user = pendingUser;
+      setPendingUser(null);
+      setStep("credentials");
+      await finishLogin(user, true);
+    } catch (err: any) {
+      setOtpError(err.message);
+    } finally {
+      setOtpLoading(false);
+    }
   };
 
   return (
     <div className="min-h-screen flex bg-background">
-      {/* Left: Branding / Hero Panel */}
-      <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-gradient-to-br from-primary via-primary to-info">
+      {/* Left: Branding / Hero Panel (admin-designed in Settings) */}
+      <div className={`hidden lg:flex lg:w-1/2 relative bg-gradient-to-br ${theme_.hero}`}>
         {/* Decorative shapes */}
         <div className="absolute inset-0 overflow-hidden">
           <div className="absolute -top-32 -right-32 h-96 w-96 rounded-full bg-white/10 blur-3xl" />
@@ -93,15 +221,19 @@ export function LoginPanel() {
           />
         </div>
 
-        <div className="relative z-10 flex flex-col justify-between p-12 text-primary-foreground w-full">
+        <div className="relative z-10 flex flex-col justify-between p-12 text-primary-foreground w-full overflow-y-auto">
           {/* Logo */}
           <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm border border-white/20">
-              <Heart className="h-6 w-6" fill="currentColor" />
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm border border-white/20 overflow-hidden">
+              {branding.appLogo ? (
+                <img src={branding.appLogo} alt="App logo" className="h-10 w-10 object-contain" />
+              ) : (
+                <Heart className="h-6 w-6" fill="currentColor" />
+              )}
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">MediCore CRM</h1>
-              <p className="text-xs text-primary-foreground/70">Enterprise Hospital Management</p>
+              <h1 className="text-xl font-bold tracking-tight">{branding.appName}</h1>
+              <p className="text-xs text-primary-foreground/70">{branding.appTagline}</p>
             </div>
           </div>
 
@@ -115,12 +247,11 @@ export function LoginPanel() {
               <Badge className="bg-white/15 text-primary-foreground border-white/20 backdrop-blur-sm mb-4">
                 <ShieldCheck className="h-3 w-3 mr-1" /> HIPAA Compliant · ISO 27001
               </Badge>
-              <h2 className="text-4xl font-bold leading-tight tracking-tight">
-                Healthcare, <br />
-                <span className="text-primary-foreground/80">reimagined.</span>
+              <h2 className="text-4xl font-bold leading-tight tracking-tight whitespace-pre-line">
+                {branding.loginTitle}
               </h2>
               <p className="mt-4 text-base text-primary-foreground/80 max-w-md leading-relaxed">
-                The complete hospital management platform — patient care, billing, pharmacy, lab, radiology, insurance, and analytics in one unified system.
+                {branding.loginSubtitle}
               </p>
             </motion.div>
 
@@ -150,7 +281,7 @@ export function LoginPanel() {
 
           {/* Footer */}
           <div className="flex items-center justify-between text-xs text-primary-foreground/60">
-            <span>© 2026 MediCore Systems. All rights reserved.</span>
+            <span>{branding.loginFooter}</span>
             <div className="flex items-center gap-4">
               <span>v2.4.1</span>
               <span className="flex items-center gap-1">
@@ -171,8 +302,9 @@ export function LoginPanel() {
           </Button>
         </div>
 
-        <div className="flex-1 flex items-center justify-center p-6 sm:p-12">
-          <div className="w-full max-w-md">
+        <div className="flex-1 overflow-y-auto">
+          <div className="flex min-h-full items-center justify-center p-6 sm:py-12 sm:px-12">
+            <div className="w-full max-w-md py-8">
             <AnimatePresence mode="wait">
               {/* ===== Login Mode ===== */}
               {authMode === "login" && (
@@ -185,23 +317,52 @@ export function LoginPanel() {
                 >
                   {/* Mobile logo */}
                   <div className="flex lg:hidden items-center gap-3 mb-8">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-info text-primary-foreground shadow-lg shadow-primary/30">
-                      <Heart className="h-5 w-5" fill="currentColor" />
+                    <div className={`flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br ${theme_.hero} text-white shadow-lg overflow-hidden`}>
+                      {branding.appLogo ? (
+                        <img src={branding.appLogo} alt="App logo" className="h-9 w-9 object-contain" />
+                      ) : (
+                        <Heart className="h-5 w-5" fill="currentColor" />
+                      )}
                     </div>
                     <div>
-                      <h1 className="text-lg font-bold tracking-tight">MediCore CRM</h1>
-                      <p className="text-xs text-muted-foreground">Hospital Management</p>
+                      <h1 className="text-lg font-bold tracking-tight">{branding.appName}</h1>
+                      <p className="text-xs text-muted-foreground">{branding.appTagline}</p>
                     </div>
                   </div>
 
                   <div className="mb-8">
                     <h2 className="text-2xl font-bold tracking-tight">Sign in to your account</h2>
-                    <p className="text-sm text-muted-foreground mt-1.5">
-                      Welcome back! Please enter your credentials to continue.
-                    </p>
+                      <p className="text-sm text-muted-foreground mt-1.5">
+                        Enter your credentials. You can skip the branch — it defaults to your assigned branch.
+                      </p>
                   </div>
 
+                  {step === "credentials" ? (
                   <form onSubmit={handleLogin} className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="branch" className="text-sm font-medium">
+                        Branch <span className="text-[11px] font-normal text-muted-foreground">(optional — uses your assigned branch)</span>
+                      </Label>
+                      <div className="relative">
+                        <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        <Select value={effectiveBranch} onValueChange={setSelectedBranch}>
+                          <SelectTrigger className="pl-10 h-11 rounded-xl">
+                            <SelectValue placeholder="Required for staff — pick your branch" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {storeBranches.map((b) => (
+                              <SelectItem key={b.id} value={b.name}>
+                                <span className="flex items-center gap-2">
+                                  <Building2 className="h-3 w-3" />
+                                  {b.name} — {b.location}
+                                </span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
                     <div className="space-y-2">
                       <Label htmlFor="email" className="text-sm font-medium">Email Address</Label>
                       <div className="relative">
@@ -211,7 +372,7 @@ export function LoginPanel() {
                           type="email"
                           placeholder="you@medicore.com"
                           value={email}
-                          onChange={(e) => setEmail(e.target.value)}
+                          onChange={(e) => { setEmail(e.target.value); setLoginError(""); }}
                           className="pl-10 h-11 rounded-xl"
                           required
                         />
@@ -236,7 +397,7 @@ export function LoginPanel() {
                           type={showPassword ? "text" : "password"}
                           placeholder="••••••••"
                           value={password}
-                          onChange={(e) => setPassword(e.target.value)}
+                          onChange={(e) => { setPassword(e.target.value); setLoginError(""); }}
                           className="pl-10 pr-10 h-11 rounded-xl"
                           required
                         />
@@ -249,6 +410,12 @@ export function LoginPanel() {
                         </button>
                       </div>
                     </div>
+
+                    {loginError && (
+                      <div className="rounded-xl bg-destructive/5 border border-destructive/20 p-3 text-center">
+                        <p className="text-xs text-destructive font-medium">{loginError}</p>
+                      </div>
+                    )}
 
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
@@ -276,144 +443,70 @@ export function LoginPanel() {
                         </>
                       )}
                     </Button>
-
-                    {/* Divider */}
-                    <div className="relative my-6">
-                      <div className="absolute inset-0 flex items-center">
-                        <div className="w-full border-t border-border" />
-                      </div>
-                      <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-background px-3 text-muted-foreground font-medium">Or continue with</span>
-                      </div>
-                    </div>
-
-                    {/* Alt login buttons */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-11 rounded-xl gap-2"
-                        onClick={() => setAuthMode("otp")}
-                      >
-                        <Smartphone className="h-4 w-4 text-primary" /> OTP Login
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-11 rounded-xl gap-2"
-                        onClick={() => setAuthMode("mfa")}
-                      >
-                        <Fingerprint className="h-4 w-4 text-primary" /> Biometric
-                      </Button>
-                    </div>
                   </form>
-
-                  {/* Quick Role Login */}
-                  <div className="mt-8">
-                    <p className="text-xs font-medium text-muted-foreground mb-3 text-center">
-                      Quick demo login — select a role
-                    </p>
-                    <div className="grid grid-cols-5 gap-2">
-                      {quickRoles.map((role) => {
-                        const Icon = role.icon;
-                        const isActive = selectedRole === role.key;
-                        return (
-                          <button
-                            key={role.key}
-                            type="button"
-                            onClick={() => handleQuickLogin(role.key)}
-                            disabled={loading}
-                            className={`group flex flex-col items-center gap-1.5 p-2.5 rounded-xl border transition-all ${
-                              isActive
-                                ? "border-primary bg-primary/5 shadow-sm"
-                                : "border-border hover:border-primary/40 hover:bg-muted/40"
-                            }`}
-                          >
-                            <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${role.color}`}>
-                              <Icon className="h-4 w-4" />
-                            </div>
-                            <span className="text-[10px] font-medium">{role.label}</span>
-                          </button>
-                        );
-                      })}
+                  ) : (
+                  <form onSubmit={handleVerifyOtp} className="space-y-4">
+                    <div className="rounded-xl bg-primary/5 border border-primary/20 p-4 text-center">
+                      <ShieldCheck className="h-8 w-8 mx-auto text-primary mb-2" />
+                      <p className="text-sm font-semibold">Two-factor verification</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {otpInfo?.delivered === "none"
+                          ? "No Email/SMS delivery is configured, so your code is shown below (demo mode)."
+                          : `We sent a 6-digit code to ${otpInfo?.destination ?? "your contact"}. It expires in 10 minutes.`}
+                      </p>
+                      {otpInfo?.delivered === "none" && otpInfo?.devCode && (
+                        <p className="mt-2 inline-block rounded-lg bg-background border px-4 py-2 text-2xl font-mono font-bold tracking-[0.3em]">
+                          {otpInfo.devCode}
+                        </p>
+                      )}
                     </div>
-                  </div>
-                </motion.div>
-              )}
-
-              {/* ===== OTP Mode ===== */}
-              {authMode === "otp" && (
-                <motion.div
-                  key="otp"
-                  initial={{ opacity: 0, x: 10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -10 }}
-                  transition={{ duration: 0.25 }}
-                >
-                  <button
-                    onClick={() => setAuthMode("login")}
-                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-6 transition-colors"
-                  >
-                    <ArrowLeft className="h-4 w-4" /> Back to login
-                  </button>
-
-                  <div className="mb-8">
-                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary mb-4">
-                      <Smartphone className="h-7 w-7" />
-                    </div>
-                    <h2 className="text-2xl font-bold tracking-tight">Verify with OTP</h2>
-                    <p className="text-sm text-muted-foreground mt-1.5">
-                      We&apos;ve sent a 6-digit code to <span className="font-medium text-foreground">+91 98765 43210</span>
-                    </p>
-                  </div>
-
-                  <div className="space-y-6">
                     <div className="flex justify-center">
-                      <InputOTP
-                        maxLength={6}
-                        value={otp}
-                        onChange={(v) => setOtp(v)}
-                      >
+                      <InputOTP maxLength={6} value={otpCode} onChange={(v) => { setOtpCode(v); setOtpError(""); }}>
                         <InputOTPGroup>
-                          <InputOTPSlot index={0} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={1} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={2} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={3} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={4} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={5} className="h-12 w-12 text-lg" />
+                          {[0, 1, 2, 3, 4, 5].map((i) => (
+                            <InputOTPSlot key={i} index={i} />
+                          ))}
                         </InputOTPGroup>
                       </InputOTP>
                     </div>
-
-                    <div className="text-center text-sm text-muted-foreground">
-                      Didn&apos;t receive code?{" "}
-                      <button className="text-primary font-medium hover:underline">Resend in 0:42</button>
-                    </div>
-
+                    {otpError && (
+                      <div className="rounded-xl bg-destructive/5 border border-destructive/20 p-3 text-center">
+                        <p className="text-xs text-destructive font-medium">{otpError}</p>
+                      </div>
+                    )}
                     <Button
-                      onClick={handleOtpLogin}
+                      type="submit"
                       className="w-full h-11 rounded-xl text-sm font-semibold gap-2"
-                      disabled={loading || otp.length < 6}
+                      disabled={otpLoading || otpCode.trim().length !== 6}
                     >
-                      {loading ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" /> Verifying...
-                        </>
+                      {otpLoading ? (
+                        <><Loader2 className="h-4 w-4 animate-spin" /> Verifying...</>
                       ) : (
-                        <>
-                          <CheckCircle2 className="h-4 w-4" /> Verify & Continue
-                        </>
+                        <>Verify & Sign In <ArrowRight className="h-4 w-4" /></>
                       )}
                     </Button>
-
-                    <div className="rounded-xl bg-info/5 border border-info/20 p-3 text-center">
-                      <p className="text-xs text-muted-foreground">
-                        Demo: Enter any 6 digits to continue
-                      </p>
+                    <div className="flex items-center justify-between text-xs">
+                      <button
+                        type="button"
+                        onClick={() => { setStep("credentials"); setPendingUser(null); setOtpCode(""); setOtpError(""); }}
+                        className="text-muted-foreground hover:text-foreground font-medium"
+                      >
+                        ← Back to password
+                      </button>
+                      <button
+                        type="button"
+                        disabled={otpLoading || nowTick < coolUntil}
+                        onClick={() => pendingUser && requestOtp(pendingUser.email)}
+                        className="text-primary hover:underline font-medium disabled:opacity-50 disabled:no-underline"
+                      >
+                        {nowTick < coolUntil ? `Resend in ${Math.ceil((coolUntil - nowTick) / 1000)}s` : "Resend code"}
+                      </button>
                     </div>
-                  </div>
+                  </form>
+                  )}
                 </motion.div>
               )}
+
 
               {/* ===== Forgot Password ===== */}
               {authMode === "forgot" && (
@@ -478,85 +571,6 @@ export function LoginPanel() {
                   </div>
                 </motion.div>
               )}
-
-              {/* ===== MFA Mode ===== */}
-              {authMode === "mfa" && (
-                <motion.div
-                  key="mfa"
-                  initial={{ opacity: 0, x: 10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -10 }}
-                  transition={{ duration: 0.25 }}
-                >
-                  <button
-                    onClick={() => setAuthMode("login")}
-                    className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-6 transition-colors"
-                  >
-                    <ArrowLeft className="h-4 w-4" /> Back to login
-                  </button>
-
-                  <div className="mb-8">
-                    <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-success/10 text-success mb-4">
-                      <ShieldCheck className="h-7 w-7" />
-                    </div>
-                    <h2 className="text-2xl font-bold tracking-tight">Two-Factor Authentication</h2>
-                    <p className="text-sm text-muted-foreground mt-1.5">
-                      Enter the 6-digit code from your authenticator app to continue.
-                    </p>
-                  </div>
-
-                  <div className="space-y-6">
-                    <div className="flex justify-center">
-                      <InputOTP
-                        maxLength={6}
-                        value={otp}
-                        onChange={(v) => setOtp(v)}
-                      >
-                        <InputOTPGroup>
-                          <InputOTPSlot index={0} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={1} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={2} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={3} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={4} className="h-12 w-12 text-lg" />
-                          <InputOTPSlot index={5} className="h-12 w-12 text-lg" />
-                        </InputOTPGroup>
-                      </InputOTP>
-                    </div>
-
-                    <div className="rounded-xl bg-muted/50 p-3 flex items-center gap-3">
-                      <Fingerprint className="h-5 w-5 text-primary shrink-0" />
-                      <div className="flex-1">
-                        <p className="text-xs font-medium">Biometric authentication enabled</p>
-                        <p className="text-xs text-muted-foreground">Use fingerprint or face ID on your device</p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleOtpLogin}
-                        className="text-xs h-7"
-                      >
-                        Use Biometric
-                      </Button>
-                    </div>
-
-                    <Button
-                      onClick={handleOtpLogin}
-                      className="w-full h-11 rounded-xl text-sm font-semibold gap-2"
-                      disabled={loading || otp.length < 6}
-                    >
-                      {loading ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" /> Verifying...
-                        </>
-                      ) : (
-                        <>
-                          <ShieldCheck className="h-4 w-4" /> Verify & Sign In
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                </motion.div>
-              )}
             </AnimatePresence>
 
             {/* Footer */}
@@ -578,6 +592,7 @@ export function LoginPanel() {
                   <Lock className="h-3 w-3" /> 256-bit SSL
                 </span>
               </div>
+            </div>
             </div>
           </div>
         </div>

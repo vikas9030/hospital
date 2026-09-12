@@ -11,8 +11,11 @@ export type ModuleKey =
   | "beds"
   | "billing"
   | "insurance"
+  | "accounts"
+  | "attendance"
   | "laboratory"
   | "radiology"
+  | "nursing"
   | "pharmacy"
   | "records"
   | "crm"
@@ -22,9 +25,81 @@ export type ModuleKey =
   | "inventory"
   | "settings";
 
+export type ModuleName =
+  | "patients"
+  | "doctors"
+  | "appointments"
+  | "opd"
+  | "ipd"
+  | "beds"
+  | "billing"
+  | "insurance"
+  | "accounts"
+  | "attendance"
+  | "laboratory"
+  | "radiology"
+  | "nursing"
+  | "pharmacy"
+  | "records"
+  | "crm"
+  | "marketing"
+  | "staff"
+  | "inventory";
+
+export type PatientCondition = "Stable" | "Under Observation" | "Critical" | "Recovering";
+
+/** Vitals + status recorded by a nurse during a patient check. */
+export interface VitalsEntry {
+  id: string;
+  patientId: string;
+  patientName: string;
+  nurseId: string;
+  nurse: string;
+  at: string;
+  bpSys?: string;
+  bpDia?: string;
+  pulse?: string;
+  temp?: string;
+  spo2?: string;
+  sugar?: string;
+  condition: PatientCondition;
+  notes?: string;
+  branch: string;
+}
+
+/** First-aid / bedside care given by a nurse. */
+export interface FirstAidEntry {
+  id: string;
+  patientId: string;
+  patientName: string;
+  /** Walk-in name when the patient is not registered. */
+  customName?: string;
+  nurseId: string;
+  nurse: string;
+  at: string;
+  kind: "Dressing" | "Injection" | "IV Line" | "Oxygen" | "First Response" | "Bedside Care" | "Other";
+  bedId?: string;
+  bedNumber?: string;
+  notes?: string;
+  /** Charge for the care (₹). Billed as an invoice so Billing counts it. */
+  amount?: number;
+  /** Collected so far (₹). */
+  paidAmount?: number;
+  invoiceId?: string;
+  branch: string;
+}
+
+/** Admin assignment: which doctors, wards and beds a nurse covers. */
+export interface NurseAssignment {
+  nurseId: string;
+  nurseName: string;
+  doctorIds: string[];
+  wards: string[];
+  bedIds: string[];
+}
+
 export type Role =
-  | "Super Admin"
-  | "Hospital Admin"
+  | "Admin"
   | "Doctor"
   | "Receptionist"
   | "Nurse"
@@ -34,7 +109,8 @@ export type Role =
   | "Accountant"
   | "HR"
   | "Marketing"
-  | "Patient";
+  | "Patient"
+  | (string & {});
 
 export interface Patient {
   id: string;
@@ -52,10 +128,14 @@ export interface Patient {
   insurancePolicy: string;
   allergies: string[];
   chronicDiseases: string[];
-  status: "Active" | "Admitted" | "Discharged" | "OPD";
+  status: "Active" | "Admitted" | "Discharged" | "OPD" | "Follow Up";
   lastVisit: string;
   registeredOn: string;
   branch: string;
+  opDate?: string;
+  opFees?: number;
+  doctorId?: string;
+  doctorName?: string;
 }
 
 export interface TimelineEvent {
@@ -89,12 +169,28 @@ export interface Doctor {
   qualification: string;
   phone: string;
   email: string;
-  availability: "Available" | "Busy" | "Off Duty" | "On Leave";
+  availability: "Available" | "Busy" | "Off Duty" | "On Leave" | "Follow Up";
   rating: number;
   consultationFee: number;
   todayAppointments: number;
   patientsTreated: number;
   branch: string;
+  availableDays?: string[];
+  availableFrom?: string;
+  availableTo?: string;
+  shift?: string;
+  /** Detailed per-day shift timings (multiple shifts per day allowed). */
+  schedule?: DayShift[];
+}
+
+export interface DoctorBranchSchedule {
+  id?: string;
+  doctorEmail: string;
+  branch: string;
+  availableDays: string[];
+  availableFrom?: string;
+  availableTo?: string;
+  shift?: string;
 }
 
 export interface Appointment {
@@ -109,20 +205,118 @@ export interface Appointment {
   date: string;
   time: string;
   type: "Walk-in" | "Online" | "Emergency" | "Referral";
-  status: "Scheduled" | "Checked-in" | "In Consultation" | "Completed" | "Cancelled" | "No-show";
+  status: "Scheduled" | "Checked-in" | "In Consultation" | "Completed" | "Cancelled" | "No-show" | "Follow Up";
   reason: string;
   waitingTime: number;
+  branch: string;
+  recurrence?: RecurringSchedule;
+  reminderSent?: boolean;
+  reminderMinutesBefore?: number;
+    /** Doctor-entered clinical notes, health problems, diagnostic observations. */
+    clinicalNotes?: string;
+    problems?: string;
+    /** Cancel audit (migration 026) — who cancelled, when, and why. */
+    cancelledBy?: string;
+    cancelledAt?: string;
+    cancelReason?: string;
+  }
+
+export interface PrescriptionItem {
+  medicineName: string;
+  dosage: string;
+  frequency: string;
+  duration: string;
+  quantity: number;
+  unit: "Tablet" | "Sheet";
+  notes?: string;
+}
+
+export interface Prescription {
+  id: string;
+  patientId: string;
+  patientName: string;
+  appointmentId?: string;
+  doctorName: string;
+  diagnosis: string;
+  notes: string;
+  status: "Issued" | "Partially Dispensed" | "Dispensed" | "Cancelled" | "Follow Up";
+  date: string;
+  branch: string;
+  items: PrescriptionItem[];
+}
+
+export interface PatientLogin {
+  patientId: string;
+  phone: string;
+  mustChangePassword: boolean;
+  lastLoginAt?: string;
+}
+
+/** One shift timing on one weekday, e.g. Mon 09:00–13:00 Morning. */
+export interface DayShift {
+  day: string;
+  from: string;
+  to: string;
+  shift: string;
+}
+
+export interface AppointmentRequest {
+  id: string;
+  patientId: string;
+  patientName: string;
+  phone: string;
+  doctorId: string;
+  doctorName: string;
+  department: string;
+  date: string;
+  time: string;
+  reason: string;
+  fee: number;
+  status: "Requested" | "Accepted" | "Rejected" | "Cancelled" | "Follow Up";
+  branch: string;
+  createdAt?: string;
+}
+
+export interface RecurringSchedule {
+  frequency: number;
+  period: "month" | "week";
+  totalOccurrences: number;
+  completedOccurrences: number;
+  startDate: string;
+  groupId: string;
+}
+
+export interface AppointmentReminder {
+  id: string;
+  appointmentId: string;
+  patientId: string;
+  patientName: string;
+  patientPhone: string;
+  doctorName: string;
+  department: string;
+  appointmentDate: string;
+  appointmentTime: string;
+  minutesBefore: number;
+  sentAt: string;
+  method: "sms" | "email" | "push" | "whatsapp";
+  status: "pending" | "sent" | "failed";
+  branch: string;
 }
 
 export interface Bed {
   id: string;
   number: string;
   ward: "ICU" | "General Ward" | "Private Room" | "Semi Private" | "Emergency" | "Operation Theatre";
-  status: "Available" | "Occupied" | "Maintenance" | "Reserved";
+  status: "Available" | "Occupied" | "Maintenance" | "Reserved" | "Follow Up";
   patientName?: string;
   patientId?: string;
   admittedOn?: string;
   dailyRate: number;
+  branch: string;
+  type?: string;
+  doctorName?: string;
+  diagnosis?: string;
+  department?: string;
 }
 
 export interface Invoice {
@@ -136,18 +330,51 @@ export interface Invoice {
   subtotal: number;
   tax: number;
   discount: number;
+  /** Percentage-based billing (migration 027). Amounts derive from these. */
+  discountPercent?: number;
+  gstPercent?: number;
+  gstAmount?: number;
+  cstPercent?: number;
+  cstAmount?: number;
+  /** Flexible named tax lines (migration 028) — source of truth for tax. */
+  taxes?: InvoiceTaxLine[];
   total: number;
   paidAmount: number;
-  status: "Paid" | "Partial" | "Pending" | "Overdue";
+  status: "Paid" | "Partial" | "Pending" | "Overdue" | "Follow Up";
   paymentMethod?: string;
+  branch: string;
+  paidDate?: string;
 }
 
 export interface InvoiceItem {
   description: string;
-  category: "Consultation" | "Lab" | "Radiology" | "Pharmacy" | "Room" | "Procedure" | "Other";
+  category: "Consultation" | "Lab" | "Radiology" | "Pharmacy" | "Room" | "Procedure" | "Other" | "OPD" | "IPD";
   quantity: number;
   rate: number;
   amount: number;
+}
+
+export interface InvoiceTaxLine {
+  name: string;
+  percent: number;
+  amount: number;
+}
+
+export interface MedicineAlert {
+  id: string;
+  medicineId: string;
+  medicineName: string;
+  batchNo: string;
+  alertType: "expiry" | "expired" | "low_stock" | "out_of_stock";
+  severity: "high" | "medium" | "low";
+  message: string;
+  daysToExpiry?: number | null;
+  stock: number;
+  threshold: number;
+  status: "active" | "acknowledged" | "resolved";
+  branch: string;
+  createdAt: string;
+  resolvedAt?: string | null;
 }
 
 export interface Medicine {
@@ -160,8 +387,13 @@ export interface Medicine {
   stock: number;
   reorderLevel: number;
   price: number;
+  /** Tablets per sheet/strip — drives sheet↔tablet price calculation. */
+  stripSize?: number;
+  /** Price per full sheet/strip. */
+  sheetPrice?: number;
   supplier: string;
-  status: "In Stock" | "Low Stock" | "Out of Stock" | "Expiring Soon";
+  status: "In Stock" | "Low Stock" | "Out of Stock" | "Expiring Soon" | "Follow Up";
+  branch: string;
 }
 
 export interface LabTest {
@@ -173,10 +405,13 @@ export interface LabTest {
   category: string;
   orderedBy: string;
   orderedOn: string;
-  status: "Ordered" | "Sample Collected" | "Testing" | "Quality Check" | "Approved" | "Rejected";
+  status: "Ordered" | "Sample Collected" | "Testing" | "Quality Check" | "Approved" | "Rejected" | "Follow Up";
   reportReady: boolean;
   price: number;
   result?: string;
+  findings?: string;
+  problems?: string;
+  branch: string;
 }
 
 export interface RadiologyOrder {
@@ -184,12 +419,28 @@ export interface RadiologyOrder {
   orderId: string;
   patientName: string;
   patientId: string;
-  modality: "X-Ray" | "CT Scan" | "MRI" | "Ultrasound" | "ECG";
+  modality: string;
   region: string;
   orderedBy: string;
   orderedOn: string;
-  status: "Ordered" | "In Progress" | "Image Captured" | "Report Generated" | "Approved";
+  status: "Ordered" | "In Progress" | "Image Captured" | "Report Generated" | "Approved" | "Follow Up";
   price: number;
+  findings?: string;
+  problems?: string;
+  branch: string;
+}
+
+export interface MedicalRecord {
+  id: string;
+  patientId: string;
+  patientName: string;
+  type: string;
+  title: string;
+  notes: string;
+  doctor: string;
+  recordDate: string;
+  branch: string;
+  createdBy: string;
 }
 
 export interface InsuranceClaim {
@@ -202,8 +453,18 @@ export interface InsuranceClaim {
   claimAmount: number;
   approvedAmount: number;
   date: string;
-  status: "Pending" | "Pre-Auth" | "Approved" | "Rejected" | "Settled";
+  status: "Pending" | "Pre-Auth" | "Approved" | "Rejected" | "Settled" | "Follow Up";
   treatment: string;
+  branch: string;
+  /** Linked billing invoice — approved amounts are applied to it. */
+  invoiceId?: string;
+  /** Cashless or Reimbursement. */
+  type?: "Cashless" | "Reimbursement" | "";
+  admissionDate?: string;
+  dischargeDate?: string;
+  /** Third-party administrator handling the claim. */
+  tpaName?: string;
+  remarks?: string;
 }
 
 export interface Lead {
@@ -218,33 +479,55 @@ export interface Lead {
   assignedTo: string;
   createdOn: string;
   lastContact: string;
+  branch: string;
 }
+
+export type CampaignAudienceKind =
+  | "all-patients" | "patient"
+  | "all-doctors" | "doctor"
+  | "all-staff" | "staff";
 
 export interface Campaign {
   id: string;
   name: string;
   type: "Email" | "SMS" | "WhatsApp" | "Offer" | "Referral";
-  status: "Active" | "Scheduled" | "Completed" | "Draft";
+  status: "Active" | "Scheduled" | "Completed" | "Draft" | "Follow Up";
   audience: number;
   sent: number;
   opened: number;
   clicked: number;
   conversions: number;
   startDate: string;
+  branch: string;
+  /** Who receives it (structured targeting). */
+  audienceKind?: CampaignAudienceKind;
+  audienceRefId?: string;
+  audienceRefName?: string;
+  message?: string;
 }
 
 export interface StaffMember {
   id: string;
+  staffId: string;
   name: string;
+  photo?: string;
   role: Role;
   department: string;
   phone: string;
   email: string;
-  status: "Active" | "On Leave" | "Inactive";
+  password: string;
+  mustChangePassword: boolean;
+  status: "Active" | "On Leave" | "Inactive" | "Follow Up";
   shift: "Morning" | "Evening" | "Night";
   attendance: number;
   joinDate: string;
   salary: number;
+  branch: string;
+  branchId: string;
+  consultationFee?: number;
+  availableDays?: string[];
+  availableFrom?: string;
+  availableTo?: string;
 }
 
 export interface InventoryItem {
@@ -258,7 +541,8 @@ export interface InventoryItem {
   price: number;
   location: string;
   lastRestocked: string;
-  status: "In Stock" | "Low Stock" | "Out of Stock";
+  status: "In Stock" | "Low Stock" | "Out of Stock" | "Follow Up";
+  branch: string;
 }
 
 export interface Branch {
@@ -273,10 +557,55 @@ export interface Branch {
 
 export interface Notification {
   id: string;
-  type: "appointment" | "lab" | "billing" | "insurance" | "pharmacy" | "system" | "marketing";
+  type: "appointment" | "lab"   | "billing"
+  | "insurance"
+  | "pharmacy" | "system" | "marketing" | "emergency" | "reminder";
   title: string;
   message: string;
   time: string;
   read: boolean;
   priority: "high" | "medium" | "low";
+  branch: string;
 }
+
+/** Hospital expense (money out) — salaries, supplies, utilities, etc. */
+export interface Expense {
+  id: string;
+  title: string;
+  category: "Salaries" | "Medicines" | "Supplies" | "Utilities" | "Rent" | "Maintenance" | "Food" | "Transport" | "Marketing" | "Other";
+  amount: number;
+  date: string;
+  paymentMethod: string;
+  vendor?: string;
+  notes?: string;
+  recordedBy: string;
+  branch: string;
+}
+
+/** Branch department, managed by Admin (Settings → Departments). */
+export interface Department {
+  id: string;
+  name: string;
+  branch: string;
+  head?: string;
+  description?: string;
+  isActive: boolean;
+}
+
+/** Daily staff attendance row — manual (HR) or kiosk/device punch. */
+export interface AttendanceRecord {
+  id: string;
+  staffId: string;
+  staffName: string;
+  date: string;
+  checkIn?: string;
+  checkOut?: string;
+  status: "Present" | "Absent" | "Leave" | "Half Day" | "Holiday" | "Week Off";
+    mode: "Manual" | "Kiosk" | "Device";
+    markedBy: string;
+    notes?: string;
+    branch: string;
+    /** WiFi-gate audit (migration 030): device IP + on-network proof. */
+    deviceIp?: string;
+    networkVerified?: boolean;
+  }

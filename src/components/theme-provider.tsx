@@ -3,6 +3,12 @@
 import * as React from "react";
 import { ThemeProvider as NextThemesProvider } from "next-themes";
 
+const _origConsoleError = console.error;
+console.error = (...args: unknown[]) => {
+  if (typeof args[0] === "string" && args[0].includes("Encountered a script tag while rendering React component")) return;
+  _origConsoleError.call(console, ...args);
+};
+
 export function ThemeProvider({
   children,
   ...props

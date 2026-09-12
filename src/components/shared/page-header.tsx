@@ -24,7 +24,7 @@ export function PageHeader({ title, description, icon: Icon, action, className }
           {description && <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>}
         </div>
       </div>
-      {action && <div className="flex items-center gap-2">{action}</div>}
+      {action && <div className="flex flex-wrap items-center gap-2 sm:justify-end min-w-0 w-full sm:w-auto [&>*]:min-w-0 [&>*]:max-w-full">{action}</div>}
     </div>
   );
 }

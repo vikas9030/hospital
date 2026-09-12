@@ -1,0 +1,4 @@
+ALTER TABLE lab_tests ADD COLUMN IF NOT EXISTS findings TEXT;
+ALTER TABLE lab_tests ADD COLUMN IF NOT EXISTS problems TEXT;
+ALTER TABLE radiology_orders ADD COLUMN IF NOT EXISTS findings TEXT;
+ALTER TABLE radiology_orders ADD COLUMN IF NOT EXISTS problems TEXT;

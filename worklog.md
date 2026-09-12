@@ -84,3 +84,25 @@ Stage Summary:
 - Full auth state management with login/logout wired throughout the app
 - Dynamic user display in sidebar + topnav based on logged-in role
 - All flows verified working via Agent Browser
+
+---
+Task ID: 3
+Agent: Main Agent (Super Z)
+Task: Migrate from mock data to Supabase-backed persistence + full CRUD across all modules
+
+Work Log:
+- Removed static mock store (`src/lib/data.ts` deleted); all modules now read branch-filtered live data via `useBranchData` hook + Zustand store
+- Added Supabase layer: `src/lib/supabase/{client,server,admin}.ts`, `src/lib/supabase-data.ts` (row mappers + fetch/create/update/delete per entity)
+- Added 24 API routes under `src/app/api/*` (full GET/POST/PATCH/DELETE for 17 resources; GET-only charts aggregates, invoice-items by ?invoiceId=, patient-timeline by ?patientId=, settings key-values, users merge, doctor-schedules, doctors/ensure for staff-derived FK materialization)
+- Extended store (`src/store/app-store.ts`) with `loadFromSupabase()` (bulk load + settings merge + schedules + idempotent OP-date→appointment auto-conversion + DB users merge), medicalRecords collection, settings, doctorSchedules, audit logs, role definitions
+- Patient detail timeline rebuilt on live appointments/invoices (Total Visits, Last Visit, Total Billed, Outstanding stat cards; Visit History timeline; Follow-ups/Documents/Billing tabs; QR + print/export)
+- Dashboard wired to live branch data + `/api/charts` aggregates via `useChartData`
+- Auth extended with Super Admin setup panel (`setup-panel.tsx`), persisted users, admin password reset, delete-all-data danger zone
+- Added service pricing (`service-pricing.ts`), invoice printing (`invoice-print.ts`), chart data hook, branch data hook; Supabase migrations in `supabase/migrations/` (001 initial hospital schema, 002 findings columns) + `scripts/` DB patch helpers
+- Fixed post-migration gap: `medical_records` table existed in migration 001 but was never applied to live DB, so `GET /api/medical-records` returned 500 ("table not in schema cache"); applied CREATE TABLE + RLS + service-role policy + updated_at trigger idempotently via direct connection; endpoint now 200 with full POST/PATCH/DELETE round-trip verified
+- Verified: `tsc --noEmit` clean (only unrelated `examples/websocket` missing socket.io types), scoped ESLint clean on migrated files, all 24 API routes return 200 at runtime (param-guarded routes verified with query strings)
+
+Stage Summary:
+- App is fully Supabase-backed: no mock-data dependency at runtime; store hydrates from live APIs on login
+- All 20 modules perform real CRUD through API routes with branch scoping and role-gated UI permissions
+- Docs synced: `download/README.md` now documents the 24 API routes + Supabase schema source of truth
