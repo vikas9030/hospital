@@ -34,7 +34,6 @@ import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 export default function HomeClient() {
   const { activeModule, isAuthenticated, authMode } = useAppStore();
   const loadFromSupabase = useAppStore((s) => s.loadFromSupabase);
-  const refreshUsers = useAppStore((s) => s.refreshUsers);
   const users = useAppStore((s) => s.users);
   const usersChecked = useAppStore((s) => s.usersChecked);
   const roleDefinitions = useAppStore((s) => s.roleDefinitions);
@@ -49,17 +48,15 @@ export default function HomeClient() {
   );
 
   useEffect(() => {
-    // After hydration: verify the user list against Supabase before choosing
-    // Setup vs Login, so a fresh browser never flashes "Create Admin
-    // Account" when an admin already exists in the backend.
-    if (hydrated && !isAuthenticated && !usersChecked) {
-      refreshUsers();
-    }
-    // Full sync once logged in.
-    if (hydrated && isAuthenticated) {
+    // After hydration: full backend sync (users, branches, settings) before
+    // choosing Setup vs Login, so a fresh browser never flashes "Create
+    // Admin Account" when an admin already exists — and the login branch
+    // dropdown, 2FA and IP-whitelist settings are populated everywhere,
+    // including mobile and PWA.
+    if (hydrated) {
       loadFromSupabase();
     }
-  }, [hydrated, isAuthenticated, usersChecked, refreshUsers, loadFromSupabase]);
+  }, [hydrated, isAuthenticated, loadFromSupabase]);
 
   // Keep the permission registry in step with role edits.
   useEffect(() => {
