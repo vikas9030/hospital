@@ -1,0 +1,7 @@
+# Netlify auto-deploy: every push to main rebuilds and publishes the site.
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"

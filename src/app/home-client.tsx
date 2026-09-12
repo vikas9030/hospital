@@ -34,7 +34,9 @@ import { Toaster as SonnerToaster } from "@/components/ui/sonner";
 export default function HomeClient() {
   const { activeModule, isAuthenticated, authMode } = useAppStore();
   const loadFromSupabase = useAppStore((s) => s.loadFromSupabase);
+  const refreshUsers = useAppStore((s) => s.refreshUsers);
   const users = useAppStore((s) => s.users);
+  const usersChecked = useAppStore((s) => s.usersChecked);
   const roleDefinitions = useAppStore((s) => s.roleDefinitions);
   const hasAdmin = users.some((u) => u.role === "Admin");
   const hydrated = useSyncExternalStore(
@@ -47,13 +49,17 @@ export default function HomeClient() {
   );
 
   useEffect(() => {
-    // After hydration: sync from DB when logged in, or when no local Admin
-    // exists yet (so an account created via setup on any device is
-    // recognized and the user lands on Login instead of Setup again).
-    if (hydrated && (isAuthenticated || !hasAdmin)) {
+    // After hydration: verify the user list against Supabase before choosing
+    // Setup vs Login, so a fresh browser never flashes "Create Admin
+    // Account" when an admin already exists in the backend.
+    if (hydrated && !isAuthenticated && !usersChecked) {
+      refreshUsers();
+    }
+    // Full sync once logged in.
+    if (hydrated && isAuthenticated) {
       loadFromSupabase();
     }
-  }, [hydrated, isAuthenticated, hasAdmin, loadFromSupabase]);
+  }, [hydrated, isAuthenticated, usersChecked, refreshUsers, loadFromSupabase]);
 
   // Keep the permission registry in step with role edits.
   useEffect(() => {
@@ -83,6 +89,16 @@ export default function HomeClient() {
   }
 
   const app = (() => {
+    // Setup shows ONLY when the backend-verified user list has no admin.
+    // While the check is in flight on a fresh browser, hold the spinner
+    // instead of flashing the setup page.
+    if (!hasAdmin && !usersChecked) {
+      return (
+        <div className="flex h-screen items-center justify-center bg-background">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+        </div>
+      );
+    }
     if (!hasAdmin || authMode === "setup") {
       return <SetupPanel />;
     }

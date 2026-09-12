@@ -193,6 +193,11 @@ interface AppState {
   users: User[];
   addUser: (user: User) => void;
   refreshUsers: () => Promise<void>;
+  /** True once the user list has been verified against Supabase this session.
+      The boot screen waits for this before choosing Setup vs Login, so a
+      fresh browser never flashes "Create Admin Account" when an admin
+      already exists in the backend. Not persisted — always rechecked. */
+  usersChecked: boolean;
   upsertDoctorByEmail: (doctor: Doctor) => void;
   deleteUser: (email: string) => void;
   changePassword: (userId: string, currentPassword: string, newPassword: string) => Promise<boolean>;
@@ -348,6 +353,7 @@ export const useAppStore = create<AppState>()(
           notifications: [],
           appointmentReminders: [],
           medicineAlerts: [],
+          usersChecked: false,
           users: [],
           roleDefinitions: [],
           auditLogs: [],
@@ -802,22 +808,25 @@ export const useAppStore = create<AppState>()(
       // Pull login accounts from the database and merge (DB wins per email).
       // This lets staff sign in from any device, not just the browser where
       // the admin created their account.
+      usersChecked: false,
       refreshUsers: async () => {
-        try {
-          const res = await fetch("/api/users");
-          if (!res.ok) return;
-          const dbUsers = await res.json();
-          if (!Array.isArray(dbUsers)) return;
-          set((s) => {
-            const byEmail = new Map<string, User>();
-            for (const u of dbUsers) byEmail.set(u.email, u);
-            for (const u of s.users) if (!byEmail.has(u.email)) byEmail.set(u.email, u);
-            return { users: Array.from(byEmail.values()) };
-          });
-        } catch {
-          // Offline: keep locally cached accounts.
-        }
-      },
+          try {
+            const res = await fetch("/api/users");
+            if (!res.ok) return;
+            const dbUsers = await res.json();
+            if (!Array.isArray(dbUsers)) return;
+            set((s) => {
+              const byEmail = new Map<string, User>();
+              for (const u of dbUsers) byEmail.set(u.email, u);
+              for (const u of s.users) if (!byEmail.has(u.email)) byEmail.set(u.email, u);
+              return { users: Array.from(byEmail.values()) };
+            });
+          } catch {
+            // Offline: keep locally cached accounts.
+          } finally {
+            set({ usersChecked: true });
+          }
+        },
       deleteUser: (email) => set((s) => ({
         users: s.users.filter((u) => u.email !== email),
       })),
