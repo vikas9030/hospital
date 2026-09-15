@@ -76,7 +76,9 @@ export function VisitRequestsInbox() {
   };
 
   if (!canHandleRequests) return null;
-  if (requests.length === 0 && !loading) return null;
+  // Render only when pending requests exist — never flash an empty "(0)" card
+  // while the inbox is still loading on refresh.
+  if (requests.length === 0) return null;
 
   return (
     <Card className="border-info/40 bg-info/5">

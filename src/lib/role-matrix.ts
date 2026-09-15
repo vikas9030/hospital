@@ -8,7 +8,7 @@ export type ModulePerms = Record<MatrixAction, boolean>;
 export type RoleMatrix = Record<string, ModulePerms>;
 
 export const MATRIX_MODULES = [
-  "patients", "doctors", "appointments", "reception", "opd", "ipd", "beds",
+  "patients", "doctors", "appointments", "reception", "opd", "ipd", "beds", "surgery",
   "billing", "insurance", "laboratory", "radiology", "pharmacy", "records",
   "crm", "marketing", "reports", "staff", "inventory",
 ] as const;
@@ -38,18 +38,18 @@ export const ROLE_TEMPLATES: Record<string, { label: string; desc: string; matri
     label: "Front Desk (like Receptionist)",
     desc: "Patients, visits, beds, billing — no deletes, no staff.",
     matrix: build(
-      ["patients", "doctors", "appointments", "reception", "opd", "ipd", "beds", "billing"],
+      ["patients", "doctors", "appointments", "reception", "opd", "ipd", "beds", "surgery", "billing"],
       ["patients", "appointments", "billing"],
-      ["patients", "appointments", "opd", "ipd", "beds", "billing"]
+      ["patients", "appointments", "opd", "ipd", "beds", "surgery", "billing"]
     ),
   },
   clinical: {
     label: "Clinical (like Doctor/Nurse)",
     desc: "Care modules with notes and reports — no billing deletes.",
     matrix: build(
-      ["patients", "doctors", "appointments", "opd", "ipd", "beds", "laboratory", "radiology", "pharmacy", "records"],
+      ["patients", "doctors", "appointments", "opd", "ipd", "beds", "surgery", "laboratory", "radiology", "pharmacy", "records"],
       ["laboratory", "radiology", "records"],
-      ["patients", "appointments", "opd", "ipd", "beds", "laboratory", "radiology", "records"]
+      ["patients", "appointments", "opd", "ipd", "beds", "surgery", "laboratory", "radiology", "records"]
     ),
   },
   accounts: {

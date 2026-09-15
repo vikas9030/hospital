@@ -30,6 +30,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAppStore } from "@/store/app-store";
 import { canAddAnything, canAddPatient, canEditModule, canDeleteModule, isAdmin, isDoctorAvailableOn, branchSetting, scheduleActor } from "@/lib/utils";
 import { printInvoice } from "@/lib/invoice-print";
+import { IPDBillingPanel } from "@/components/modules/ipd-billing";
 import type { Bed, Patient, Doctor, Invoice } from "@/lib/types";
 
 const wardColors = {
@@ -384,6 +385,31 @@ function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: bool
         });
         if (patRes.ok) updatePatient(form.patientId, { status: "Admitted" });
       }
+      // Mirror into the admissions ledger (031): one billing account per admission.
+      // Best-effort — bed assignment above is the source of truth for the map.
+      try {
+        const currentUserName = useAppStore.getState().currentUser?.name ?? "";
+        const activeBranch = useAppStore.getState().activeBranch;
+        await fetch("/api/admissions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            patientId: form.patientId,
+            patientName: selectedPatient?.name ?? "",
+            uhid: selectedPatient?.uhid ?? "",
+            doctorName: form.doctorName,
+            department: form.department || selectedDoctor?.department || "",
+            bedId: savedBed.id,
+            bedNumber: savedBed.number,
+            room: (savedBed as Bed).type ?? "",
+            ward: savedBed.ward,
+            bedRate: savedBed.dailyRate ?? 0,
+            notes: form.diagnosis,
+            branch: activeBranch,
+            createdBy: currentUserName,
+          }),
+        });
+      } catch { /* ledger mirror is best-effort */ }
       toast({ title: "Admitted", description: `${selectedPatient?.name} admitted to bed ${savedBed.number} (${savedBed.ward})${savedBed.department ? ` • ${savedBed.department}` : ""}.` });
       onOpenChange(false);
     } catch (e: any) {
@@ -562,6 +588,34 @@ function DischargeDialog({ open, onOpenChange, bed, onDischarged }: {
         }),
       });
       if (!bedRes.ok) throw new Error("Invoice created, but freeing the bed failed.");
+      // Close the matching admissions-ledger row (best-effort) and post the
+      // bed stay as an unbilled admission charge so the IPD ledger stays complete.
+      try {
+        const admRes = await fetch(`/api/admissions?branch=${encodeURIComponent(bed.branch)}`);
+        const adms = admRes.ok ? await admRes.json() : [];
+        const match = Array.isArray(adms) ? adms.find((a: { patientId?: string; status?: string }) => a.patientId === bed.patientId && a.status === "Admitted") : null;
+        if (match?.id) {
+          await fetch("/api/admissions", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: match.id, status: "Discharged", billingStatus: "Discharge Pending", actorName: useAppStore.getState().currentUser?.name ?? "Staff" }),
+          });
+          await fetch("/api/admission-charges", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              admissionId: match.id,
+              patientId: bed.patientId ?? "",
+              category: "Bed",
+              description: `Bed ${bed.number} (${bed.ward}) • ${admittedOn} → ${dischargeOn} (${days}d × ₹${rate})`,
+              quantity: days,
+              rate,
+              createdBy: useAppStore.getState().currentUser?.name ?? "",
+              branch: bed.branch,
+            }),
+          }).catch(() => {});
+        }
+      } catch { /* ledger mirror is best-effort */ }
       onDischarged(invoice);
       // Hand the printed/PDF invoice to the front desk immediately.
       if (!printInvoice(invoice, settings, patients.find((p) => p.id === (bed.patientId ?? "")))) {
@@ -1194,9 +1248,18 @@ export function IPDModule() {
             <p className="text-[11px] text-muted-foreground">
               Discharging a patient automatically creates a Paid invoice (stay days × bed rate) in the Billing module and frees the bed.
             </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-full"
+              onClick={() => useAppStore.getState().setActiveModule("surgery")}
+            >
+              Open Surgery & OT →
+            </Button>
           </CardContent>
         </Card>
       </div>
+      <IPDBillingPanel compact />
       {newAdmissionOpen && <NewAdmissionDialog open onOpenChange={(v) => { if (!v) setNewAdmissionOpen(false); }} />}
       {editBed && (
         <EditAdmissionDialog

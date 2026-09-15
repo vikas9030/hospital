@@ -198,6 +198,13 @@ function mapInvoice(row: any): Invoice {
     paymentMethod: row.payment_method,
     branch: row.branch,
     paidDate: row.paid_date ?? "",
+    admissionId: row.admission_id ?? undefined,
+    billKind: row.bill_kind ?? undefined,
+    billStatus: row.bill_status ?? undefined,
+    finalizedAt: row.finalized_at ?? undefined,
+    createdBy: row.created_by ?? undefined,
+    discountReason: row.discount_reason ?? undefined,
+    discountApprovedBy: row.discount_approved_by ?? undefined,
   };
 }
 
@@ -208,6 +215,10 @@ function mapInvoiceItem(row: any): InvoiceItem {
     quantity: row.quantity,
     rate: row.rate,
     amount: row.amount,
+    admissionId: row.admission_id ?? undefined,
+    chargeId: row.charge_id ?? undefined,
+    discount: row.discount ?? undefined,
+    tax: row.tax ?? undefined,
   };
 }
 
@@ -984,7 +995,7 @@ export async function createInvoice(invoice: Invoice): Promise<Invoice> {
     const invoiceNo = explicitNo && attempt === 0 ? explicitNo : await nextInvoiceNo();
     try {
       // withColumnFallback keeps inserts working on databases where migration
-      // 027 (percentage columns) hasn't been applied yet.
+      // 027 (percentage columns) or 031 (admission link columns) hasn't been applied yet.
       const data = await withColumnFallback("invoices", {
         id: attempt === 0 ? invoice.id : `${invoice.id}-r${attempt}`,
         invoice_no: invoiceNo,
@@ -1006,25 +1017,49 @@ export async function createInvoice(invoice: Invoice): Promise<Invoice> {
         payment_method: invoice.paymentMethod || null,
         branch: invoice.branch,
         paid_date: invoice.paidDate || (invoice.paidAmount ? invoice.date || null : null),
+        admission_id: (invoice as any).admissionId || null,
+        bill_kind: (invoice as any).billKind || "OPD",
+        bill_status: (invoice as any).billStatus || "Draft",
+        finalized_at: (invoice as any).finalizedAt || null,
+        created_by: (invoice as any).createdBy || "",
+        discount_reason: (invoice as any).discountReason || "",
+        discount_approved_by: (invoice as any).discountApprovedBy || "",
       }, async (clean) => {
         const { data, error } = await supabaseAdmin.from("invoices").insert(clean).select().single();
         if (error) throw error;
         return data;
       });
       if (invoice.items && invoice.items.length > 0) {
-        const rows = invoice.items.map((it) => ({
+        let rows: Record<string, unknown>[] = invoice.items.map((it) => ({
           invoice_id: data.id,
           description: it.description,
           category: it.category || "General",
           quantity: it.quantity ?? 1,
           rate: it.rate ?? 0,
           amount: it.amount ?? 0,
+          admission_id: (it as any).admissionId || null,
+          charge_id: (it as any).chargeId || null,
+          discount: (it as any).discount ?? 0,
+          tax: (it as any).tax ?? 0,
         }));
-        const { error: itemError } = await supabaseAdmin.from("invoice_items").insert(rows);
-        if (itemError) {
-          // Compensate: don't leave an invoice behind without its line items.
-          await supabaseAdmin.from("invoices").delete().eq("id", data.id);
-          throw itemError;
+        for (let r = 0; r < 5; r++) {
+          const { error: itemError } = await supabaseAdmin.from("invoice_items").insert(rows as any);
+          if (!itemError) break;
+          const m = /Could not find the '([^']+)' column .* in the schema cache/i.exec(itemError.message ?? "");
+          const col = m ? m[1] : null;
+          if (!col || !(col in (rows[0] ?? {}))) {
+            await supabaseAdmin.from("invoices").delete().eq("id", data.id);
+            throw itemError;
+          }
+          rows = rows.map((row) => {
+            const out = { ...row };
+            delete out[col];
+            return out;
+          });
+          if (r === 4) {
+            await supabaseAdmin.from("invoices").delete().eq("id", data.id);
+            throw itemError;
+          }
         }
       }
       // Persist flexible tax lines (best-effort on DBs without migration 028).
@@ -1069,6 +1104,13 @@ export async function updateInvoiceRow(id: string, updates: Partial<Invoice>): P
   if (updates.gstAmount !== undefined) patch.gst_amount = updates.gstAmount;
   if (updates.cstPercent !== undefined) patch.cst_percent = updates.cstPercent;
   if (updates.cstAmount !== undefined) patch.cst_amount = updates.cstAmount;
+  if ((updates as any).admissionId !== undefined) patch.admission_id = (updates as any).admissionId || null;
+  if ((updates as any).billKind !== undefined) patch.bill_kind = (updates as any).billKind;
+  if ((updates as any).billStatus !== undefined) patch.bill_status = (updates as any).billStatus;
+  if ((updates as any).finalizedAt !== undefined) patch.finalized_at = (updates as any).finalizedAt || null;
+  if ((updates as any).createdBy !== undefined) patch.created_by = (updates as any).createdBy;
+  if ((updates as any).discountReason !== undefined) patch.discount_reason = (updates as any).discountReason;
+  if ((updates as any).discountApprovedBy !== undefined) patch.discount_approved_by = (updates as any).discountApprovedBy;
   // Auto-reconcile status when money or the bill amount changes without an
   // explicit status: e.g. collect ₹500 on a ₹500 bill (Paid), admin edits the
   // bill to ₹800 → status flips back to Partial with ₹300 outstanding, so the
@@ -1095,16 +1137,31 @@ export async function replaceInvoiceItems(invoiceId: string, items: InvoiceItem[
   const { error: delError } = await supabaseAdmin.from("invoice_items").delete().eq("invoice_id", invoiceId);
   if (delError) throw delError;
   if (items.length > 0) {
-    const rows = items.map((it) => ({
+    let rows: Record<string, unknown>[] = items.map((it) => ({
       invoice_id: invoiceId,
       description: it.description,
       category: it.category || "Other",
       quantity: it.quantity ?? 1,
       rate: it.rate ?? 0,
       amount: it.amount ?? (it.quantity ?? 1) * (it.rate ?? 0),
+      admission_id: (it as any).admissionId || null,
+      charge_id: (it as any).chargeId || null,
+      discount: (it as any).discount ?? 0,
+      tax: (it as any).tax ?? 0,
     }));
-    const { error: insError } = await supabaseAdmin.from("invoice_items").insert(rows);
-    if (insError) throw insError;
+    for (let r = 0; r < 5; r++) {
+      const { error: insError } = await supabaseAdmin.from("invoice_items").insert(rows as any);
+      if (!insError) break;
+      const m = /Could not find the '([^']+)' column .* in the schema cache/i.exec((insError as any).message ?? "");
+      const col = m ? m[1] : null;
+      if (!col || !(col in (rows[0] ?? {}))) throw insError;
+      rows = rows.map((row) => {
+        const out = { ...row };
+        delete out[col];
+        return out;
+      });
+      if (r === 4) throw insError;
+    }
   }
   return fetchInvoiceItems(invoiceId);
 }
@@ -1643,7 +1700,7 @@ export async function getDatabaseStatus(): Promise<DatabaseStatus> {
   };
 
   const coreTables = ["patients", "doctors", "appointments", "invoices", "medicines", "lab_tests", "radiology_orders", "medical_records", "users", "staff"];
-  const newTables = ["app_settings", "doctor_branch_schedules", "patient_logins", "prescriptions", "prescription_items", "appointment_requests", "razorpay_payments", "audit_logs", "appointment_reminders", "expenses", "departments", "staff_attendance", "invoice_items", "invoice_taxes", "medicine_alerts", "beds", "inventory", "insurance_claims", "leads", "campaigns", "notifications"];
+  const newTables = ["app_settings", "doctor_branch_schedules", "patient_logins", "prescriptions", "prescription_items", "appointment_requests", "razorpay_payments", "audit_logs", "appointment_reminders", "expenses", "departments", "staff_attendance", "invoice_items", "invoice_taxes", "medicine_alerts", "beds", "inventory", "insurance_claims", "leads", "campaigns", "notifications", "admissions", "admission_charges", "payments", "payment_allocations", "refunds", "surgery_cases", "surgery_case_charges", "surgery_packages", "surgery_package_items", "surgery_consumables"];
   for (const t of [...coreTables, ...newTables]) await checkTable(t);
   const columnChecks: [string, string][] = [
     ["lab_tests", "findings"], ["lab_tests", "problems"],
@@ -1683,6 +1740,8 @@ export async function getDatabaseStatus(): Promise<DatabaseStatus> {
     { file: "028_invoice_taxes.sql", label: "Flexible per-bill tax lines (any names + %, locked after payment)", ok: missingTables("invoice_taxes").length === 0, missing: missingTables("invoice_taxes") },
     { file: "029_medicine_alerts.sql", label: "Pharmacy alerts — near-expiry + low/out-of-stock (backend-synced)", ok: missingTables("medicine_alerts").length === 0, missing: missingTables("medicine_alerts") },
     { file: "030_attendance_network.sql", label: "WiFi-gated attendance (device IP + on-network proof — auto-fallback if red)", ok: true, missing: [] },
+    { file: "031_admissions_billing_ledger.sql", label: "IPD admissions + charges + payments/advances + refunds + invoice links", ok: missingTables("admissions", "admission_charges", "payments", "payment_allocations", "refunds").length === 0, missing: missingTables("admissions", "admission_charges", "payments", "payment_allocations", "refunds") },
+    { file: "032_surgery_operations.sql", label: "Surgery cases + charges + packages + OT consumables", ok: missingTables("surgery_cases", "surgery_case_charges", "surgery_packages", "surgery_package_items", "surgery_consumables").length === 0, missing: missingTables("surgery_cases", "surgery_case_charges", "surgery_packages", "surgery_package_items", "surgery_consumables") },
   ];
   return { tables, columns, migrations };
 }

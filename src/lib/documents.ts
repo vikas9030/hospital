@@ -1,4 +1,4 @@
-import type { Appointment, Invoice, LabTest, MedicalRecord, Patient, RadiologyOrder } from "@/lib/types";
+import type { Admission, Appointment, CompleteBill, Invoice, LabTest, MedicalRecord, Patient, Payment, RadiologyOrder, Refund, SurgeryCase } from "@/lib/types";
 
 // Central styled-document system: every bill, lab report, radiology report,
 // medical record and OP summary prints with the clinic's branding (logo, name,
@@ -193,6 +193,153 @@ export function buildMedicalRecordHtml(record: MedicalRecord, patient: Patient |
 
 export function printMedicalRecord(record: MedicalRecord, patient: Patient | null | undefined, settings: Record<string, string> = {}): boolean {
   const doc = buildMedicalRecordHtml(record, patient, settings);
+  return openPrintWindow(doc.title, doc.body, doc.accent);
+}
+
+// ===== Payment receipt (payments / advances ledger — money in, never deleted) =====
+export function buildReceiptHtml(payment: Payment, settings: Record<string, string> = {}): ReportDoc {
+  const { b, accent } = brandingOf(settings);
+  const body = `${headerHtml(b)}
+    <div class="doctype"><div class="dtitle">${esc(payment.kind === "Advance" ? "Advance Receipt" : "Payment Receipt")} — ${esc(payment.receiptNo || payment.id)}</div><span class="badge" style="background:#dcfce7;color:#166534">PAID</span></div>
+    <div class="pblock">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
+        <div class="pname">${esc(payment.patientName || "Patient")}</div>
+        ${payment.patientId ? `<div class="puhid">${esc(payment.patientId)}</div>` : ""}
+      </div>
+      <div class="prow">
+        <span><span class="lbl">Amount: </span><strong>₹${(payment.amount ?? 0).toLocaleString("en-IN")}</strong></span>
+        <span><span class="lbl">Method: </span><strong>${esc(payment.method || "Cash")}</strong></span>
+        <span><span class="lbl">Date: </span><strong>${esc((payment.occurredAt || "").split("T")[0])}</strong></span>
+        ${payment.txnRef ? `<span><span class="lbl">Txn: </span><strong>${esc(payment.txnRef)}</strong></span>` : ""}
+        ${payment.admissionId ? `<span><span class="lbl">Admission: </span><strong>${esc(payment.admissionId)}</strong></span>` : ""}
+        ${payment.receivedBy ? `<span><span class="lbl">Received by: </span><strong>${esc(payment.receivedBy)}</strong></span>` : ""}
+      </div>
+      ${payment.notes ? `<p class="para">${esc(payment.notes)}</p>` : ""}
+    </div>
+    ${footHtml(b, b.billFooter)}`;
+  return toDoc(`Receipt ${payment.receiptNo || payment.id}`, body, accent);
+}
+
+export function printReceipt(payment: Payment, settings: Record<string, string> = {}): boolean {
+  const doc = buildReceiptHtml(payment, settings);
+  return openPrintWindow(doc.title, doc.body, doc.accent);
+}
+
+// ===== Refund advice (reversal workflow — original payment is kept) =====
+export function buildRefundHtml(refund: Refund, settings: Record<string, string> = {}): ReportDoc {
+  const { b, accent } = brandingOf(settings);
+  const body = `${headerHtml(b)}
+    <div class="doctype"><div class="dtitle">Refund Advice — ${esc(refund.refundNo || refund.id)}</div><span class="badge" style="background:#fef9c3;color:#854d0e">${esc(refund.status)}</span></div>
+    <div class="pblock">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
+        <div class="pname">${esc(refund.patientName || "Patient")}</div>
+        ${refund.patientId ? `<div class="puhid">${esc(refund.patientId)}</div>` : ""}
+      </div>
+      <div class="prow">
+        <span><span class="lbl">Amount: </span><strong>₹${(refund.amount ?? 0).toLocaleString("en-IN")}</strong></span>
+        <span><span class="lbl">Method: </span><strong>${esc(refund.method || "Cash")}</strong></span>
+        ${refund.reason ? `<span><span class="lbl">Reason: </span><strong>${esc(refund.reason)}</strong></span>` : ""}
+        ${refund.admissionId ? `<span><span class="lbl">Admission: </span><strong>${esc(refund.admissionId)}</strong></span>` : ""}
+        ${refund.approvedBy ? `<span><span class="lbl">Approved by: </span><strong>${esc(refund.approvedBy)}</strong></span>` : ""}
+        ${refund.processedBy ? `<span><span class="lbl">Processed by: </span><strong>${esc(refund.processedBy)}</strong></span>` : ""}
+      </div>
+    </div>
+    ${footHtml(b, b.billFooter)}`;
+  return toDoc(`Refund ${refund.refundNo || refund.id}`, body, accent);
+}
+
+export function printRefund(refund: Refund, settings: Record<string, string> = {}): boolean {
+  const doc = buildRefundHtml(refund, settings);
+  return openPrintWindow(doc.title, doc.body, doc.accent);
+}
+
+// ===== Complete IPD bill (admission ledger: charges + payments + refunds) =====
+export function buildCompleteBillHtml(bill: CompleteBill, settings: Record<string, string> = {}): ReportDoc {
+  const { b, accent } = brandingOf(settings);
+  const a: Admission = bill.admission;
+  const chargeRows = bill.charges.length
+    ? bill.charges.map((c, i) => `<tr><td>${i + 1}. ${esc(c.description)}</td><td style="text-align:center">${esc(c.category)}</td><td style="text-align:center">${c.quantity ?? 1}</td><td style="text-align:right">₹${(c.rate ?? 0).toLocaleString("en-IN")}</td><td style="text-align:right">₹${(c.net ?? 0).toLocaleString("en-IN")}</td></tr>`).join("")
+    : `<tr><td colspan="5" style="text-align:center;color:#888">No charges recorded</td></tr>`;
+  const ledgerRows = bill.ledger.length
+    ? bill.ledger.map((l) => `<tr><td>${esc((l.date || "").split("T")[0])}</td><td>${esc(l.type)}</td><td>${esc(l.description)}</td><td style="text-align:right">${l.debit > 0 ? `₹${l.debit.toLocaleString("en-IN")}` : "—"}</td><td style="text-align:right">${l.credit > 0 ? `₹${l.credit.toLocaleString("en-IN")}` : "—"}</td><td style="text-align:right"><strong>₹${l.balance.toLocaleString("en-IN")}</strong></td></tr>`).join("")
+    : `<tr><td colspan="6" style="text-align:center;color:#888">No ledger entries</td></tr>`;
+  const catRows = bill.categoryTotals.map((c) => `<div class="kv"><span class="k">${esc(c.category)}</span><span class="v">₹${c.amount.toLocaleString("en-IN")}</span></div>`).join("");
+  const body = `${headerHtml(b)}
+    <div class="doctype"><div class="dtitle">IPD Final Bill — ${esc(a.admissionNo || a.id)}</div><span class="badge" style="background:#e0f2fe;color:#075985">${esc(a.billingStatus)} • ${esc(a.status)}</span></div>
+    <div class="pblock">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
+        <div class="pname">${esc(a.patientName)}</div><div class="puhid">${esc(a.uhid || a.patientId)}</div>
+      </div>
+      <div class="prow">
+        <span><span class="lbl">Admitted: </span><strong>${esc((a.admissionAt || "").split("T")[0])}</strong></span>
+        ${a.dischargeAt ? `<span><span class="lbl">Discharged: </span><strong>${esc(a.dischargeAt.split("T")[0])}</strong></span>` : ""}
+        ${a.bedNumber ? `<span><span class="lbl">Bed: </span><strong>${esc(a.bedNumber)}${a.ward ? ` (${esc(a.ward)})` : ""}</strong></span>` : ""}
+        ${a.doctorName ? `<span><span class="lbl">Doctor: </span><strong>${esc(a.doctorName)}</strong></span>` : ""}
+        ${a.payMode ? `<span><span class="lbl">Pay mode: </span><strong>${esc(a.payMode)}${a.insuranceProvider ? ` • ${esc(a.insuranceProvider)}` : ""}</strong></span>` : ""}
+      </div>
+    </div>
+    <h2>Charges (${bill.charges.length})</h2>
+    <table><thead><tr><th>Charge</th><th style="text-align:center">Category</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Net</th></tr></thead><tbody>${chargeRows}</tbody></table>
+    ${catRows ? `<h2>Category Totals</h2>${catRows}` : ""}
+    <h2>Running Ledger</h2>
+    <table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th style="text-align:right">Debit</th><th style="text-align:right">Credit</th><th style="text-align:right">Balance</th></tr></thead><tbody>${ledgerRows}</tbody></table>
+    <div class="totals">
+      <div><span>Gross</span><span>₹${bill.gross.toLocaleString("en-IN")}</span></div>
+      <div><span>Discount</span><span>− ₹${bill.discount.toLocaleString("en-IN")}</span></div>
+      <div><span>Tax</span><span>+ ₹${bill.tax.toLocaleString("en-IN")}</span></div>
+      <div class="grand"><span>Net payable</span><span>₹${bill.netPayable.toLocaleString("en-IN")}</span></div>
+      <div><span>Advances</span><span>₹${bill.advancePaid.toLocaleString("en-IN")}</span></div>
+      <div><span>Payments</span><span>₹${bill.previousPayments.toLocaleString("en-IN")}</span></div>
+      ${bill.refundsTotal > 0 ? `<div><span>Refunds</span><span>₹${bill.refundsTotal.toLocaleString("en-IN")}</span></div>` : ""}
+      <div class="grand"><span>Outstanding</span><span>₹${bill.outstanding.toLocaleString("en-IN")}</span></div>
+    </div>
+    ${footHtml(b, b.billFooter)}`;
+  return toDoc(`IPD Bill ${a.admissionNo || a.id}`, body, accent);
+}
+
+export function printCompleteBill(bill: CompleteBill, settings: Record<string, string> = {}): boolean {
+  const doc = buildCompleteBillHtml(bill, settings);
+  return openPrintWindow(doc.title, doc.body, doc.accent);
+}
+
+// ===== Surgery / OT schedule sheet =====
+export function buildSurgeryScheduleHtml(s: SurgeryCase, settings: Record<string, string> = {}): ReportDoc {
+  const { b, accent } = brandingOf(settings);
+  const row = (label: string, value: unknown) =>
+    `<div class="kv"><span class="k">${esc(label)}</span><span class="v">${esc(value ?? "—")}</span></div>`;
+  const body = `${headerHtml(b)}
+    <div class="doctype"><div class="dtitle">Surgery Schedule — ${esc(s.caseNo || s.id)}</div><span class="badge" style="background:#e0f2fe;color:#075985">${esc(s.status)}</span></div>
+    <div class="pblock">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
+        <div class="pname">${esc(s.patientName)}</div><div class="puhid">${esc(s.uhid || s.patientId)}</div>
+      </div>
+      <div class="prow">
+        <span><span class="lbl">Surgery: </span><strong>${esc(s.surgeryName)}</strong></span>
+        <span><span class="lbl">Planned: </span><strong>${esc(s.plannedDate)} ${esc(s.plannedTime)}</strong></span>
+        <span><span class="lbl">Priority: </span><strong>${esc(s.priority)} (${esc(s.kind)})</strong></span>
+      </div>
+    </div>
+    ${row("Department", s.department || "—")}
+    ${row("Diagnosis", s.diagnosis || "—")}
+    ${row("Surgeon", s.surgeon || "TBD")}
+    ${row("Assistant surgeon", s.assistantSurgeon || "—")}
+    ${row("Anesthetist", s.anesthetist || "—")}
+    ${row("Theatre", s.theatre || "—")}
+    ${row("Anesthesia", s.anesthesiaType || "—")}
+    ${row("Admission", s.admissionId || "Day-care / OPD")}
+    ${row("Bed", s.bedNumber || "—")}
+    ${row("Consent", s.consentStatus)}
+    ${row("Insurance auth", s.insuranceAuth || "—")}
+    ${row("Estimate", s.estimate > 0 ? `₹${s.estimate.toLocaleString("en-IN")}` : "—")}
+    ${s.preOpNotes ? `<h2>Pre-op Notes</h2><p class="para">${esc(s.preOpNotes)}</p>` : ""}
+    ${s.postOpNotes ? `<h2>Post-op Notes</h2><p class="para">${esc(s.postOpNotes)}</p>` : ""}
+    ${s.complications ? `<h2>Complications</h2><div class="note">${esc(s.complications)}</div>` : ""}
+    ${footHtml(b, b.reportFooter)}`;
+  return toDoc(`Surgery ${s.caseNo || s.id}`, body, accent);
+}
+
+export function printSurgerySchedule(s: SurgeryCase, settings: Record<string, string> = {}): boolean {
+  const doc = buildSurgeryScheduleHtml(s, settings);
   return openPrintWindow(doc.title, doc.body, doc.accent);
 }
 

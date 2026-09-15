@@ -9,6 +9,7 @@ export type ModuleKey =
   | "opd"
   | "ipd"
   | "beds"
+  | "surgery"
   | "billing"
   | "insurance"
   | "accounts"
@@ -32,6 +33,7 @@ export type ModuleName =
   | "opd"
   | "ipd"
   | "beds"
+  | "surgery"
   | "billing"
   | "insurance"
   | "accounts"
@@ -340,10 +342,21 @@ export interface Invoice {
   taxes?: InvoiceTaxLine[];
   total: number;
   paidAmount: number;
-  status: "Paid" | "Partial" | "Pending" | "Overdue" | "Follow Up";
+  status: "Paid" | "Partial" | "Pending" | "Overdue" | "Follow Up"
+    | "Partially Paid" | "Overpaid" | "Refund Due" | "Cancelled" | "Finalized" | "Draft";
   paymentMethod?: string;
   branch: string;
   paidDate?: string;
+  /** IPD link — every IPD charge/invoice belongs to an admission (031+). */
+  admissionId?: string;
+  /** OPD | IPD | Surgery | Pharmacy | Lab | Radiology | Package | Interim | Final */
+  billKind?: string;
+  /** Draft | Finalized | Cancelled — finalized bills are read-only. */
+  billStatus?: "Draft" | "Finalized" | "Cancelled";
+  finalizedAt?: string;
+  createdBy?: string;
+  discountReason?: string;
+  discountApprovedBy?: string;
 }
 
 export interface InvoiceItem {
@@ -352,6 +365,11 @@ export interface InvoiceItem {
   quantity: number;
   rate: number;
   amount: number;
+  /** IPD link (031+): which admission/charge this line came from. */
+  admissionId?: string;
+  chargeId?: string;
+  discount?: number;
+  tax?: number;
 }
 
 export interface InvoiceTaxLine {
@@ -609,3 +627,241 @@ export interface AttendanceRecord {
     deviceIp?: string;
     networkVerified?: boolean;
   }
+
+// ===== IPD admissions + financial ledger (migrations 031–032) =====
+
+export type AdmissionStatus = "Admitted" | "Discharged" | "Cancelled";
+export type AdmissionBillingStatus =
+  | "Open" | "Interim Billing" | "Discharge Pending"
+  | "Final Bill Generated" | "Payment Pending" | "Paid" | "Closed";
+
+export interface Admission {
+  id: string;
+  admissionNo: string;
+  patientId: string;
+  uhid: string;
+  patientName: string;
+  doctorName: string;
+  department: string;
+  admissionAt: string;
+  expectedDischargeDate: string;
+  dischargeAt?: string;
+  bedId: string;
+  bedNumber: string;
+  room: string;
+  ward: string;
+  bedRate: number;
+  status: AdmissionStatus;
+  billingStatus: AdmissionBillingStatus;
+  payMode: "Self" | "Insurance";
+  insuranceProvider: string;
+  insurancePolicy: string;
+  insuranceAuth: string;
+  notes: string;
+  branch: string;
+  createdBy: string;
+}
+
+export type ChargeCategory =
+  | "Registration" | "Consultation" | "Bed" | "Nursing" | "Surgery"
+  | "Operation Theatre" | "Anesthesia" | "Procedure" | "Pharmacy"
+  | "Laboratory" | "Radiology" | "Consumables" | "Supplies"
+  | "Doctor" | "Surgeon" | "Assistant" | "Anesthetist" | "Package" | "Other";
+
+export interface AdmissionCharge {
+  id: string;
+  admissionId: string;
+  patientId: string;
+  category: string;
+  description: string;
+  quantity: number;
+  rate: number;
+  amount: number;
+  discount: number;
+  tax: number;
+  net: number;
+  surgeryCaseId?: string;
+  invoiceId?: string;
+  billed: boolean;
+  idempotencyKey?: string;
+  occurredAt: string;
+  createdBy: string;
+  branch: string;
+  notes: string;
+}
+
+export type PaymentMethod =
+  | "Cash" | "UPI" | "Card" | "Bank Transfer" | "Razorpay"
+  | "Insurance" | "Cheque" | "Other";
+
+export interface Payment {
+  id: string;
+  receiptNo: string;
+  patientId: string;
+  patientName: string;
+  admissionId?: string;
+  invoiceId?: string;
+  amount: number;
+  method: string;
+  txnRef: string;
+  kind: "Payment" | "Advance";
+  idempotencyKey?: string;
+  receivedBy: string;
+  branch: string;
+  notes: string;
+  occurredAt: string;
+}
+
+export interface PaymentAllocation {
+  id: string;
+  paymentId: string;
+  invoiceId: string;
+  amount: number;
+}
+
+export type RefundStatus = "Requested" | "Approved" | "Rejected" | "Processed";
+
+export interface Refund {
+  id: string;
+  refundNo: string;
+  patientId: string;
+  patientName: string;
+  admissionId?: string;
+  invoiceId?: string;
+  paymentId?: string;
+  amount: number;
+  method: string;
+  reason: string;
+  approvedBy: string;
+  processedBy: string;
+  status: RefundStatus;
+  txnRef: string;
+  branch: string;
+}
+
+export interface LedgerRow {
+  date: string;
+  type: "Charge" | "Payment" | "Advance" | "Refund";
+  description: string;
+  debit: number;
+  credit: number;
+  balance: number;
+  refId: string;
+}
+
+export interface CompleteBill {
+  admission: Admission;
+  charges: AdmissionCharge[];
+  payments: Payment[];
+  refunds: Refund[];
+  invoices: Invoice[];
+  categoryTotals: { category: string; amount: number }[];
+  gross: number;
+  discount: number;
+  tax: number;
+  advancePaid: number;
+  previousPayments: number;
+  refundsTotal: number;
+  netPayable: number;
+  outstanding: number;
+  ledger: LedgerRow[];
+}
+
+export type SurgeryStatus =
+  | "Scheduled" | "Pre-op" | "Ready" | "In OT"
+  | "Completed" | "Cancelled" | "Post-op" | "Discharged";
+
+export interface SurgeryCase {
+  id: string;
+  caseNo: string;
+  patientId: string;
+  uhid: string;
+  patientName: string;
+  admissionId?: string;
+  bedNumber: string;
+  room: string;
+  surgeon: string;
+  assistantSurgeon: string;
+  anesthetist: string;
+  department: string;
+  surgeryName: string;
+  surgeryCategory: string;
+  diagnosis: string;
+  plannedDate: string;
+  plannedTime: string;
+  plannedDurationMin: number;
+  actualStart?: string;
+  actualEnd?: string;
+  theatre: string;
+  anesthesiaType: string;
+  priority: "Elective" | "Emergency" | "Urgent";
+  kind: "Elective" | "Emergency";
+  status: SurgeryStatus;
+  preOpNotes: string;
+  postOpNotes: string;
+  complications: string;
+  consentStatus: "Pending" | "Obtained" | "Waived";
+  insuranceAuth: string;
+  packageId?: string;
+  estimate: number;
+  advanceRequired: number;
+  branch: string;
+  remarks: string;
+  createdBy: string;
+}
+
+export interface SurgeryCaseCharge {
+  id: string;
+  caseId: string;
+  admissionId?: string;
+  label: string;
+  category: string;
+  amount: number;
+  auto: boolean;
+  packageId?: string;
+  invoiceId?: string;
+  billed: boolean;
+  createdBy: string;
+  branch: string;
+}
+
+export interface SurgeryPackage {
+  id: string;
+  name: string;
+  surgeryType: string;
+  basePrice: number;
+  packageDiscount: number;
+  tax: number;
+  validityFrom: string;
+  validityTo: string;
+  branch: string;
+  active: boolean;
+  createdBy: string;
+  items?: SurgeryPackageItem[];
+}
+
+export interface SurgeryPackageItem {
+  id: string;
+  packageId: string;
+  label: string;
+  category: string;
+  quantity: number;
+  rate: number;
+}
+
+export interface SurgeryConsumable {
+  id: string;
+  caseId: string;
+  admissionId?: string;
+  patientId: string;
+  item: string;
+  batch: string;
+  expiry: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  medicineId?: string;
+  status: "Recorded" | "Issued" | "Deducted" | "Cancelled";
+  usedBy: string;
+  branch: string;
+}

@@ -17,6 +17,7 @@ import { PatientsModule } from "@/components/modules/patients";
 import { DoctorsModule } from "@/components/modules/doctors";
 import { AppointmentsModule } from "@/components/modules/appointments";
 import { OPDModule, IPDModule, BedsModule } from "@/components/modules/operations";
+import { SurgeryModule } from "@/components/modules/surgery";
 import { BillingModule } from "@/components/modules/billing";
 import { PharmacyModule, LaboratoryModule, RadiologyModule } from "@/components/modules/clinical";
 import { InsuranceModule, CRMModule, MarketingModule } from "@/components/modules/business";
@@ -114,6 +115,7 @@ export default function HomeClient() {
         case "opd": return <OPDModule />;
         case "ipd": return <IPDModule />;
         case "beds": return <BedsModule />;
+        case "surgery": return <SurgeryModule />;
         case "billing": return <BillingModule />;
         case "insurance": return <InsuranceModule />;
         case "laboratory": return <LaboratoryModule />;

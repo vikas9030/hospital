@@ -37,7 +37,7 @@ export function buildInvoiceHtml(invoice: Invoice, settings: Record<string, stri
       <div><div class="hname">${esc(b.hospitalName)}</div><div class="hsub">${contact}</div></div>
     </div>
     <div class="doctype">
-      <div class="dtitle">Bill / Invoice — ${esc(invoice.invoiceNo)}</div>
+      <div class="dtitle">Bill / Invoice — ${esc(invoice.invoiceNo)}${invoice.billKind ? ` • ${esc(invoice.billKind)}` : ""}${invoice.billStatus ? ` • ${esc(invoice.billStatus)}` : ""}</div>
       <span class="badge" style="background:${statusBg};color:${statusColor}">${esc(invoice.status)}</span>
     </div>
     <div class="pblock">
@@ -51,6 +51,8 @@ export function buildInvoiceHtml(invoice: Invoice, settings: Record<string, stri
         ${patient?.phone ? `<span><span class="lbl">Phone: </span><strong>${esc(patient.phone)}</strong></span>` : ""}
         ${patient?.age ? `<span><span class="lbl">Age/Sex: </span><strong>${esc(patient.age)} yrs / ${esc(patient.gender)}</strong></span>` : ""}
         ${invoice.paymentMethod ? `<span><span class="lbl">Paid via: </span><strong>${esc(invoice.paymentMethod)}</strong></span>` : ""}
+        ${invoice.admissionId ? `<span><span class="lbl">Admission: </span><strong>${esc(invoice.admissionId)}</strong></span>` : ""}
+        ${invoice.discountReason ? `<span><span class="lbl">Discount: </span><strong>${esc(invoice.discountReason)}${invoice.discountApprovedBy ? ` (by ${esc(invoice.discountApprovedBy)})` : ""}</strong></span>` : ""}
       </div>
     </div>
     <table>

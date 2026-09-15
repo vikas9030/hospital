@@ -35,6 +35,7 @@ import { ImportExportButtons, type EntityIOConfig } from "@/components/shared/im
 import type { Invoice, InvoiceItem, InvoiceTaxLine } from "@/lib/types";
 import { parseServicePrices } from "@/lib/service-pricing";
 import { calcInvoiceTotals, billingDefaults, defaultTaxLines, parseTaxPresets, displayTaxLines } from "@/lib/billing";
+import { IPDBillingPanel } from "@/components/modules/ipd-billing";
 
 export interface EditableTaxLine {
   name: string;
@@ -177,8 +178,8 @@ function NewInvoiceDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>Create Invoice</DialogTitle><DialogDescription>Create a new billing invoice</DialogDescription></DialogHeader>
-      <div className="grid gap-4 py-4">
+      <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col overflow-hidden"><DialogHeader className="shrink-0"><DialogTitle>Create Invoice</DialogTitle><DialogDescription>Create a new billing invoice</DialogDescription></DialogHeader>
+      <div className="grid gap-4 py-4 overflow-y-auto pr-1 -mr-1">
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2"><Label>Patient *</Label><Select value={form.patientId} onValueChange={(v) => setForm({ ...form, patientId: v })}><SelectTrigger><SelectValue placeholder="Select patient" /></SelectTrigger><SelectContent>{branchData.patients.map((patient) => <SelectItem key={patient.id} value={patient.id}>{patient.name} ({patient.uhid})</SelectItem>)}</SelectContent></Select></div>
           <div className="space-y-2"><Label>Department</Label><Select value={form.department} onValueChange={(v) => setForm({ ...form, department: v })}><SelectTrigger><SelectValue placeholder="Select department" /></SelectTrigger><SelectContent>{branchData.departmentNames.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent></Select></div>
@@ -213,7 +214,7 @@ function NewInvoiceDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
         </div>
         <div className="space-y-2"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Additional notes" /></div>
       </div>
-      <DialogFooter><DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose><Button onClick={handleSubmit}>Create Invoice</Button></DialogFooter>
+      <DialogFooter className="shrink-0 border-t pt-4"><DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose><Button onClick={handleSubmit}>Create Invoice</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -325,12 +326,12 @@ function EditInvoiceDialog({ invoice, onOpenChange }: { invoice: Invoice | null;
 
   return (
     <Dialog open={!!invoice} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Edit Bill — {invoice.invoiceNo}</DialogTitle>
           <DialogDescription>Change bill items or amounts for {invoice.patientName}. Status re-calculates automatically.</DialogDescription>
         </DialogHeader>
-        <div className="grid gap-4 py-4">
+        <div className="grid gap-4 py-4 overflow-y-auto pr-1 -mr-1">
           <div className="rounded-lg bg-muted/50 p-3 text-xs grid grid-cols-3 gap-2">
             <div><p className="text-muted-foreground">Bill total</p><p className="text-base font-bold">₹{total.toLocaleString("en-IN")}</p></div>
             <div><p className="text-muted-foreground">Collected</p><p className="text-base font-bold text-success">₹{paid.toLocaleString("en-IN")}</p></div>
@@ -380,7 +381,7 @@ function EditInvoiceDialog({ invoice, onOpenChange }: { invoice: Invoice | null;
             </div>
           )}
         </div>
-        <DialogFooter>
+        <DialogFooter className="shrink-0 border-t pt-4">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
           <Button onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "Save Bill"}</Button>
         </DialogFooter>
@@ -621,6 +622,15 @@ export function BillingModule() {
         }
       />
 
+      <Tabs defaultValue="opd" className="w-full">
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="opd">OPD / All Bills</TabsTrigger>
+          <TabsTrigger value="ipd">IPD Admissions Ledger</TabsTrigger>
+        </TabsList>
+        <TabsContent value="ipd" className="pt-4">
+          <IPDBillingPanel />
+        </TabsContent>
+        <TabsContent value="opd" className="space-y-6 pt-4">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatCard title="Total Revenue" value={fmtMoney(totalRevenue)} icon={DollarSign} color="success" subtitle="Collected (filtered)" />
         <StatCard title="Pending Amount" value={fmtMoney(pendingAmount)} icon={Wallet} color="destructive" subtitle="To be collected" />
@@ -1030,6 +1040,8 @@ export function BillingModule() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
