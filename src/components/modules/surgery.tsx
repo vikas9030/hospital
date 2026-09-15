@@ -48,14 +48,55 @@ function useSurgeries(branch: string) {
   return { cases, setCases, packages, setPackages, loading, refresh };
 }
 
+const ANESTHESIA_OPTIONS = ["General", "Spinal", "Epidural", "Local", "Monitored Sedation", "Other"];
+
 function BookSurgeryDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (v: boolean) => void; onCreated: (c: SurgeryCase) => void }) {
   const { toast } = useToast();
-  const { patients, branch } = useBranchData();
+  const { patients, doctors, beds, departmentNames, branch } = useBranchData();
   const currentUser = useAppStore((s) => s.currentUser);
   const { packages } = useSurgeries(branch);
-  const [form, setForm] = useState({ patientId: "", surgeryName: "", surgeryCategory: "", surgeon: "", department: "", plannedDate: new Date().toISOString().split("T")[0], plannedTime: "09:00", priority: "Elective", theatre: "", anesthesiaType: "", diagnosis: "", packageId: "", estimate: "", advanceRequired: "" });
+  const [rateCards, setRateCards] = useState<SurgeryRateCard[]>([]);
+  const [form, setForm] = useState({ patientId: "", surgeryName: "", surgeryKey: "", surgeryCategory: "", surgeon: "", department: "", plannedDate: new Date().toISOString().split("T")[0], plannedTime: "09:00", priority: "Elective", theatre: "", anesthesiaType: "", diagnosis: "", packageId: "", estimate: "", advanceRequired: "" });
+  const [anesCustom, setAnesCustom] = useState(false);
   const [saving, setSaving] = useState(false);
   const patient = patients.find((p) => p.id === form.patientId);
+  const otBeds = beds.filter((b) => (b.type || "").toLowerCase().includes("operation") || (b.type || "").toLowerCase().includes("theatre") || (b.type || "").toLowerCase().includes("ot"));
+
+  // Admin-managed masters for this form: operation prices, doctors, departments, OT beds.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`/api/surgeries/rate-card?branch=${encodeURIComponent(branch)}&active=true`);
+        const data = await res.json();
+        if (Array.isArray(data)) setRateCards(data);
+      } catch { /* dropdowns fall back to manual entry */ }
+    })();
+  }, [branch]);
+
+  const cardTotal = (c: SurgeryRateCard) => c.surgeonFee + c.assistantFee + c.anesthesiaCharge + c.otCharge + c.nursingCharge;
+
+  // Picking an admin operation autofills category + estimate from its price card.
+  const pickOperation = (key: string) => {
+    if (key === "__custom") {
+      setForm({ ...form, surgeryKey: key, surgeryName: "" });
+      return;
+    }
+    const card = rateCards.find((c) => c.id === key);
+    if (!card) return;
+    setForm({
+      ...form,
+      surgeryKey: key,
+      surgeryName: card.operationName,
+      surgeryCategory: card.surgeryCategory || form.surgeryCategory,
+      estimate: String(cardTotal(card) + (card.consumablesEstimate || 0)),
+    });
+  };
+
+  // Picking an admin doctor autofills the department.
+  const pickSurgeon = (name: string) => {
+    const doc = doctors.find((d) => d.name === name);
+    setForm({ ...form, surgeon: name, department: doc?.department || form.department });
+  };
 
   const submit = async () => {
     if (!form.patientId || !form.surgeryName) {
@@ -121,7 +162,7 @@ function BookSurgeryDialog({ open, onOpenChange, onCreated }: { open: boolean; o
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
-        <DialogHeader><DialogTitle>Book Surgery</DialogTitle><DialogDescription>Schedule a case — active admission auto-links so surgery + beds merge into one single final bill.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Book Surgery</DialogTitle><DialogDescription>Admin masters autofill this form — operations, doctors, departments, theatres. Active admission auto-links so surgery + beds merge into one single final bill.</DialogDescription></DialogHeader>
         <div className="grid gap-3 py-4">
           <div className="space-y-2"><Label>Patient *</Label>
             <Select value={form.patientId} onValueChange={(v) => setForm({ ...form, patientId: v })}>
@@ -130,12 +171,38 @@ function BookSurgeryDialog({ open, onOpenChange, onCreated }: { open: boolean; o
             </Select>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2"><Label>Surgery *</Label><Input value={form.surgeryName} onChange={(e) => setForm({ ...form, surgeryName: e.target.value })} placeholder="e.g. Appendectomy" /></div>
-            <div className="space-y-2"><Label>Category</Label><Input value={form.surgeryCategory} onChange={(e) => setForm({ ...form, surgeryCategory: e.target.value })} placeholder="General / Ortho / …" /></div>
+            <div className="space-y-2"><Label>Surgery * (admin price list)</Label>
+              <Select value={form.surgeryKey} onValueChange={pickOperation}>
+                <SelectTrigger><SelectValue placeholder={rateCards.length > 0 ? "Select operation" : "No prices yet — type below"} /></SelectTrigger>
+                <SelectContent>
+                  {rateCards.map((c) => <SelectItem key={c.id} value={c.id}>{c.operationName} — ₹{cardTotal(c).toLocaleString("en-IN")}</SelectItem>)}
+                  <SelectItem value="__custom">Other / type manually…</SelectItem>
+                </SelectContent>
+              </Select>
+              {(form.surgeryKey === "__custom" || rateCards.length === 0) && (
+                <Input className="mt-1.5" value={form.surgeryName} onChange={(e) => setForm({ ...form, surgeryName: e.target.value })} placeholder="e.g. Appendectomy" />
+              )}
+            </div>
+            <div className="space-y-2"><Label>Category (auto-filled)</Label><Input value={form.surgeryCategory} onChange={(e) => setForm({ ...form, surgeryCategory: e.target.value })} placeholder="General / Ortho / …" /></div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2"><Label>Surgeon</Label><Input value={form.surgeon} onChange={(e) => setForm({ ...form, surgeon: e.target.value })} placeholder="Dr. …" /></div>
-            <div className="space-y-2"><Label>Department</Label><Input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} placeholder="General Surgery" /></div>
+            <div className="space-y-2"><Label>Surgeon (admin doctors)</Label>
+              <Select value={form.surgeon} onValueChange={pickSurgeon}>
+                <SelectTrigger><SelectValue placeholder="Select surgeon" /></SelectTrigger>
+                <SelectContent>
+                  {doctors.map((d) => <SelectItem key={d.id} value={d.name}>{d.name}{d.department ? ` • ${d.department}` : ""}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2"><Label>Department (auto-filled)</Label>
+              <Select value={departmentNames.includes(form.department) ? form.department : ""} onValueChange={(v) => setForm({ ...form, department: v })}>
+                <SelectTrigger><SelectValue placeholder="Select department" /></SelectTrigger>
+                <SelectContent>
+                  {departmentNames.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Input className="mt-1.5" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} placeholder="General Surgery" />
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-2"><Label>Date</Label><Input type="date" value={form.plannedDate} onChange={(e) => setForm({ ...form, plannedDate: e.target.value })} /></div>
@@ -148,12 +215,31 @@ function BookSurgeryDialog({ open, onOpenChange, onCreated }: { open: boolean; o
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2"><Label>Theatre</Label><Input value={form.theatre} onChange={(e) => setForm({ ...form, theatre: e.target.value })} placeholder="OT-1" /></div>
-            <div className="space-y-2"><Label>Anesthesia</Label><Input value={form.anesthesiaType} onChange={(e) => setForm({ ...form, anesthesiaType: e.target.value })} placeholder="General / Spinal" /></div>
+            <div className="space-y-2"><Label>Theatre (admin OT beds)</Label>
+              {otBeds.length > 0 ? (
+                <Select value={form.theatre} onValueChange={(v) => setForm({ ...form, theatre: v })}>
+                  <SelectTrigger><SelectValue placeholder="Select theatre" /></SelectTrigger>
+                  <SelectContent>
+                    {otBeds.map((b) => <SelectItem key={b.id} value={b.number}>{b.number}{b.ward ? ` • ${b.ward}` : ""}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input value={form.theatre} onChange={(e) => setForm({ ...form, theatre: e.target.value })} placeholder="OT-1" />
+              )}
+            </div>
+            <div className="space-y-2"><Label>Anesthesia</Label>
+              <Select value={anesCustom ? "Other" : form.anesthesiaType} onValueChange={(v) => { if (v === "Other") { setAnesCustom(true); setForm({ ...form, anesthesiaType: "" }); } else { setAnesCustom(false); setForm({ ...form, anesthesiaType: v }); } }}>
+                <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
+                <SelectContent>{ANESTHESIA_OPTIONS.map((a) => <SelectItem key={a} value={a}>{a}</SelectItem>)}</SelectContent>
+              </Select>
+              {anesCustom && (
+                <Input className="mt-1.5" value={form.anesthesiaType} onChange={(e) => setForm({ ...form, anesthesiaType: e.target.value })} placeholder="Type anesthesia…" />
+              )}
+            </div>
           </div>
           <div className="space-y-2"><Label>Diagnosis</Label><Input value={form.diagnosis} onChange={(e) => setForm({ ...form, diagnosis: e.target.value })} placeholder="Primary diagnosis" /></div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2"><Label>Estimate (₹)</Label><Input type="number" value={form.estimate} onChange={(e) => setForm({ ...form, estimate: e.target.value })} placeholder="0" /></div>
+            <div className="space-y-2"><Label>Estimate (₹) — auto-filled</Label><Input type="number" value={form.estimate} onChange={(e) => setForm({ ...form, estimate: e.target.value })} placeholder="0" /></div>
             <div className="space-y-2"><Label>Advance required (₹)</Label><Input type="number" value={form.advanceRequired} onChange={(e) => setForm({ ...form, advanceRequired: e.target.value })} placeholder="0" /></div>
           </div>
           <div className="space-y-2"><Label>Package (optional)</Label>
