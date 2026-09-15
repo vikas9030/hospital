@@ -7,6 +7,7 @@ import {
   isSessionTimeoutEnabled, sessionTimeoutMinutes,
   isIpWhitelistEnabled, parseAllowlist, ipAllowed, fetchClientIp,
 } from "@/lib/security";
+import { isAdmin } from "@/lib/utils";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
@@ -70,13 +71,19 @@ export function SessionGuard() {
       } else {
         setWarnIn(null);
       }
-      // --- IP whitelist re-check (once a minute) ---
-      if (isIpWhitelistEnabled(st.settings) && Date.now() - ipCheckedAt > 60000) {
+      // --- IP whitelist re-check (once a minute, staff only) ---
+      // Admins bypass so they never get kicked out while managing the list.
+      // Skip when the allowlist is empty (fail-open, same as login) so a
+      // misconfigured empty list can't kick out every active session.
+      if (!isAdmin(st.currentUser.role) && isIpWhitelistEnabled(st.settings) && Date.now() - ipCheckedAt > 60000) {
         ipCheckedAt = Date.now();
         const ip = await fetchClientIp();
         const fresh = useAppStore.getState();
         if (!fresh.isAuthenticated) return;
-        if (!ipAllowed(ip, parseAllowlist(fresh.settings["security_ip_allowlist"]))) {
+        if (isAdmin(fresh.currentUser.role)) return;
+        const list = parseAllowlist(fresh.settings["security_ip_allowlist"]);
+        if (list.length === 0) return;
+        if (!ipAllowed(ip, list)) {
           fresh.addAuditLog({
             actor: fresh.currentUser.name,
             actorEmail: fresh.currentUser.email,

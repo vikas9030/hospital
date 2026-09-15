@@ -10,7 +10,9 @@
     "db:push": "prisma db push --accept-data-loss",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "supabase:sync": "node scripts/sync-supabase.js",
+    "deploy:all": "npm run supabase:sync && git push origin main"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

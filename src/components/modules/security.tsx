@@ -102,11 +102,15 @@ export function SecurityTab({ settings, onSave }: { settings: Record<string, str
   const enableWhitelist = async (v: boolean) => {
     if (v && allowlist.length === 0) {
       // Anti-lockout: the machine enabling the lock is always allowed in.
+      // If we can't detect the IP, refuse to enable — otherwise everyone
+      // (including this admin) gets blocked on next sign-in.
       const ip = myIp ?? (await fetchClientIp());
       setMyIp(ip);
-      if (ip && ip !== "unknown") {
-        await saveAllowlist([ip]);
+      if (!ip || ip === "unknown") {
+        toast({ title: "Could not detect your IP", description: "IP whitelisting was NOT enabled, otherwise you would lock yourself out. Check your proxy headers, then retry.", variant: "destructive" });
+        return;
       }
+      await saveAllowlist([ip]);
     }
     await toggle(SEC_KEYS.ipWhitelist, "IP whitelisting", v);
   };
@@ -208,7 +212,7 @@ export function SecurityTab({ settings, onSave }: { settings: Record<string, str
             </div>
           </Row>
 
-          <Row icon={Globe2} title="IP Whitelisting" desc="Block sign-ins from IPs outside the allowlist" checked={isIpWhitelistEnabled(settings)} onToggle={enableWhitelist}>
+          <Row icon={Globe2} title="IP Whitelisting (staff only)" desc="Block staff sign-ins from IPs outside the allowlist — admins always bypass" checked={isIpWhitelistEnabled(settings)} onToggle={enableWhitelist}>
             <div className="pl-11 space-y-2">
               <div className="flex flex-wrap items-center gap-2 text-[11px]">
                 <span className="text-muted-foreground">Your IP: <span className="font-mono font-semibold text-foreground">{myIp ?? "—"}</span></span>

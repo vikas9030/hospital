@@ -52,15 +52,75 @@ export function parseAllowlist(raw: string | undefined): string[] {
   }
 }
 
-/** Exact match, plus trailing-wildcard prefixes like `192.168.1.*`. */
+/** Normalize for comparison: trim, lowercase, strip ::ffff: prefix,
+ *  brackets, port suffix, and %zone. Maps ::1 → 127.0.0.1. */
+export function normalizeIp(ip: string): string {
+  let clean = (ip || "").trim().toLowerCase();
+  if (!clean || clean === "unknown") return "";
+  // Strip brackets like [::1] or [1.2.3.4].
+  if (clean.startsWith("[") && clean.includes("]")) {
+    clean = clean.slice(1, clean.indexOf("]"));
+  }
+  // Strip %zone (e.g. fe80::1%eth0).
+  const pct = clean.indexOf("%");
+  if (pct !== -1) clean = clean.slice(0, pct);
+  // Strip IPv4-mapped IPv6 prefix ::ffff:1.2.3.4 → 1.2.3.4
+  if (clean.startsWith("::ffff:")) clean = clean.slice("::ffff:".length);
+  // Bare ::1 loopback → 127.0.0.1 so localhost matches either form.
+  if (clean === "::1") return "127.0.0.1";
+  // Strip a trailing :port on plain IPv4 (1.2.3.4:5678). IPv6 keeps colons.
+  const v4port = clean.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+  if (v4port) clean = v4port[1];
+  return clean.trim();
+}
+
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const p of parts) {
+    if (!/^\d{1,3}$/.test(p)) return null;
+    const v = parseInt(p, 10);
+    if (v < 0 || v > 255) return null;
+    n = n * 256 + v;
+  }
+  return n >>> 0;
+}
+
+/** CIDR match for IPv4, e.g. `49.204.239.0/24` or `49.204.0.0/16`. */
+function cidrMatch(ip: string, cidr: string): boolean {
+  const [base, bitsRaw] = cidr.split("/");
+  const bits = parseInt(bitsRaw, 10);
+  if (!Number.isFinite(bits) || bits < 0 || bits > 32) return false;
+  const ipInt = ipv4ToInt(ip);
+  const baseInt = ipv4ToInt(base.trim());
+  if (ipInt === null || baseInt === null) return false;
+  if (bits === 0) return true;
+  const mask = bits === 32 ? 0xffffffff : (0xffffffff << (32 - bits)) >>> 0;
+  return (ipInt & mask) === (baseInt & mask);
+}
+
+/** Exact match, trailing-wildcard prefixes like `192.168.1.*`,
+ *  and IPv4 CIDR ranges like `49.204.239.0/24`.
+ *  Comparison is normalized (::ffff: stripped, ::1 ↔ 127.0.0.1).
+ *  Localhost forms are treated as equivalent. */
 export function ipAllowed(ip: string, allowlist: string[]): boolean {
-  const clean = (ip || "").trim().toLowerCase();
+  const clean = normalizeIp(ip);
   if (!clean) return false;
+  const candidates =
+    clean === "127.0.0.1" ? [clean, "::1"] : clean === "::1" ? ["::1", "127.0.0.1"] : [clean];
   return allowlist.some((rule) => {
     const r = rule.trim().toLowerCase();
     if (!r) return false;
-    if (r.endsWith("*")) return clean.startsWith(r.slice(0, -1));
-    return clean === r;
+    if (r.endsWith("*")) {
+      const prefix = normalizeIp(r.slice(0, -1));
+      return candidates.some((c) => c.startsWith(prefix));
+    }
+    if (r.includes("/")) {
+      return cidrMatch(clean, r);
+    }
+    const norm = normalizeIp(r);
+    return candidates.includes(norm) || clean === norm;
   });
 }
 

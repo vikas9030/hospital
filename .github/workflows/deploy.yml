@@ -1,0 +1,21 @@
+name: Deploy frontend + backend
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund pg dotenv
+      - run: node scripts/sync-supabase.js
+        env:
+          DIRECT_URL: ${{ secrets.SUPABASE_DIRECT_URL }}
+          DATABASE_URL: ${{ secrets.SUPABASE_DIRECT_URL }}
+    # Frontend needs no job here: Netlify auto-deploys every push to main
+    # (see netlify.toml). Pushing code = frontend live + this job = backend live.

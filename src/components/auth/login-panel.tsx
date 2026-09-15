@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useBranding, loginThemeOf } from "@/lib/branding";
+import { isAdmin } from "@/lib/utils";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
 interface OtpInfo {
@@ -137,19 +138,39 @@ export function LoginPanel() {
       } catch {
         // Offline: fall back to locally cached accounts.
       }
+      try {
+        // Refresh security settings from the server so an IP added by an
+        // admin on another device takes effect here immediately (DB wins).
+        // Without this, a stale cached allowlist in localStorage can keep
+        // blocking even after the DB was fixed.
+        const res = await fetch("/api/settings", { cache: "no-store" });
+        if (res.ok) {
+          const dbSettings = await res.json();
+          if (dbSettings && typeof dbSettings === "object" && !Array.isArray(dbSettings)) {
+            useAppStore.setState((s) => ({ settings: { ...s.settings, ...dbSettings } }));
+          }
+        }
+      } catch {
+        // Offline: fall back to locally cached settings.
+      }
       const st = useAppStore.getState();
-      const result = st.authenticateUser(email.trim().toLowerCase(), password, effectiveBranch);
-      if (!result.success) {
+      const result = st.authenticateUser(email.trim().toLowerCase(), password, effectiveBranch);      if (!result.success) {
         setLoginError(result.error || "Login failed.");
         setLoading(false);
         return;
       }
       const user = result.user!;
       // IP whitelist enforcement (Settings → Security).
-      if (isIpWhitelistEnabled(st.settings)) {
+      // Admins always bypass — they can sign in from anywhere so they can
+      // manage the list. The allowlist applies to staff only.
+      // Fail OPEN when the list is empty so staff are never locked out
+      // by an empty list.
+      if (!isAdmin(user.role) && isIpWhitelistEnabled(st.settings)) {
         const ip = await fetchClientIp();
         const list = parseAllowlist(st.settings["security_ip_allowlist"]);
-        if (!ipAllowed(ip, list)) {
+        if (list.length === 0) {
+          console.warn("[security] IP whitelist is ON with an empty allowlist — allowing sign-in to avoid lockout.");
+        } else if (!ipAllowed(ip, list)) {
           await auditSecurity({
             actor: user.name,
             actorEmail: user.email,
