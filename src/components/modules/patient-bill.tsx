@@ -350,6 +350,7 @@ function CollectAllDialog({ patientId, patientName, branch, opdDues, admissions,
             paymentMethod: method,
             status: newPaid >= (inv.total ?? 0) && (inv.total ?? 0) > 0 ? "Paid" : "Partial",
             paidDate: new Date().toISOString().split("T")[0],
+            receivedBy: currentUser.name,
           }),
         });
         const body = await res.json();

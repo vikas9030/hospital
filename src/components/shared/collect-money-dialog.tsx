@@ -50,6 +50,7 @@ export function CollectMoneyDialog({
 }) {
   const { toast } = useToast();
   const updateInvoice = useAppStore((s) => s.updateInvoice);
+  const currentUser = useAppStore((s) => s.currentUser);
   const settings = useAppStore((s) => s.settings);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("");
@@ -89,6 +90,7 @@ export function CollectMoneyDialog({
           paymentMethod: method || invoice.paymentMethod || "Cash",
           status: newPaid >= total && total > 0 ? "Paid" : newPaid > 0 ? "Partial" : invoice.status,
           paidDate: newPaid > 0 ? new Date().toISOString().split("T")[0] : invoice.paidDate,
+          receivedBy: currentUser.name,
         }),
       });
       if (!res.ok) {
