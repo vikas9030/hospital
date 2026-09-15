@@ -12,6 +12,7 @@
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
     "supabase:sync": "node scripts/sync-supabase.js",
+    "portal:backfill": "node scripts/backfill-portal.js",
     "deploy:all": "npm run supabase:sync && git push origin main"
   },
   "dependencies": {
