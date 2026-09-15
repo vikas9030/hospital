@@ -1,4 +1,4 @@
-import type { Admission, Appointment, CompleteBill, Invoice, LabTest, MedicalRecord, Patient, Payment, RadiologyOrder, Refund, SurgeryCase } from "@/lib/types";
+import type { Admission, Appointment, CompleteBill, Invoice, LabTest, MedicalRecord, Patient, Payment, RadiologyOrder, Refund, SurgeryCase, SurgeryCaseCharge } from "@/lib/types";
 
 // Central styled-document system: every bill, lab report, radiology report,
 // medical record and OP summary prints with the clinic's branding (logo, name,
@@ -340,6 +340,58 @@ export function buildSurgeryScheduleHtml(s: SurgeryCase, settings: Record<string
 
 export function printSurgerySchedule(s: SurgeryCase, settings: Record<string, string> = {}): boolean {
   const doc = buildSurgeryScheduleHtml(s, settings);
+  return openPrintWindow(doc.title, doc.body, doc.accent);
+}
+
+// ===== All-in-one patient statement (OPD dues + IPD stays + surgery + money in) =====
+export interface PatientStatementData {
+  patient: Patient;
+  opdDues: Invoice[];
+  admissions: { admission: Admission; outstanding: number; gross: number; collected: number }[];
+  surgeries: { surgery: SurgeryCase; charges: SurgeryCaseCharge[]; unpaid: number }[];
+  payments: Payment[];
+  refunds: { refundNo: string; amount: number; status: string }[];
+}
+
+export function buildPatientStatementHtml(d: PatientStatementData, settings: Record<string, string> = {}): ReportDoc {
+  const { b, accent } = brandingOf(settings);
+  const opdDue = d.opdDues.reduce((s, i) => s + Math.max(0, (i.total ?? 0) - (i.paidAmount ?? 0)), 0);
+  const ipdDue = d.admissions.reduce((s, a) => s + Math.max(0, a.outstanding), 0);
+  const surgDue = d.surgeries.reduce((s, x) => s + Math.max(0, x.unpaid), 0);
+  const collected = d.payments.reduce((s, p) => s + (p.amount ?? 0), 0);
+  const row = (label: string, value: string, strong = false) =>
+    `<div class="kv"><span class="k">${esc(label)}</span><span class="v"${strong ? ' style="font-weight:800"' : ""}>${esc(value)}</span></div>`;
+  const sec = (title: string, inner: string) => `<h2>${esc(title)}</h2>${inner}`;
+  const money = (n: number) => `₹${n.toLocaleString("en-IN")}`;
+  const opdRows = d.opdDues.length
+    ? d.opdDues.map((i) => `<tr><td>${esc(i.invoiceNo)}</td><td>${esc(i.date)}</td><td style="text-align:right">${money(i.total ?? 0)}</td><td style="text-align:right">${money(i.paidAmount ?? 0)}</td><td style="text-align:right"><strong>${money(Math.max(0, (i.total ?? 0) - (i.paidAmount ?? 0)))}</strong></td></tr>`).join("")
+    : `<tr><td colspan="5" style="text-align:center;color:#888">No OPD dues</td></tr>`;
+  const ipdRows = d.admissions.length
+    ? d.admissions.map((a) => `<tr><td>${esc(a.admission.admissionNo)}</td><td>${esc((a.admission.admissionAt || "").split("T")[0])} → ${esc((a.admission.dischargeAt || "").split("T")[0] || (a.admission.expectedDischargeDate || "").split("T")[0] || "open")}</td><td>${esc(a.admission.status)} • ${esc(a.admission.billingStatus)}</td><td style="text-align:right">${money(a.gross)}</td><td style="text-align:right">${money(a.collected)}</td><td style="text-align:right"><strong>${money(Math.max(0, a.outstanding))}</strong></td></tr>`).join("")
+    : `<tr><td colspan="6" style="text-align:center;color:#888">No admissions</td></tr>`;
+  const surgRows = d.surgeries.length
+    ? d.surgeries.map((x) => `<tr><td>${esc(x.surgery.caseNo)}</td><td>${esc(x.surgery.surgeryName)} (${esc(x.surgery.surgeon || "TBD")})</td><td>${esc(x.surgery.status)}</td><td style="text-align:right">${money(x.charges.reduce((s, c) => s + (c.amount || 0), 0))}</td><td style="text-align:right"><strong>${money(Math.max(0, x.unpaid))}</strong></td></tr>`).join("")
+    : `<tr><td colspan="5" style="text-align:center;color:#888">No surgeries</td></tr>`;
+  const payRows = d.payments.length
+    ? d.payments.map((p) => `<tr><td>${esc(p.receiptNo || p.id)}</td><td>${esc((p.occurredAt || "").split("T")[0])}</td><td>${esc(p.kind)} • ${esc(p.method)}</td><td style="text-align:right">${money(p.amount ?? 0)}</td></tr>`).join("")
+    : `<tr><td colspan="4" style="text-align:center;color:#888">No money collected yet</td></tr>`;
+  const body = `${headerHtml(b)}
+    <div class="doctype"><div class="dtitle">Patient Statement — ${esc(d.patient.name)}</div><span class="badge" style="background:#e0f2fe;color:#075985">${esc(d.patient.uhid)}</span></div>
+    <div class="pblock">
+      ${row("Patient", `${d.patient.name} • ${d.patient.age ?? "—"} yrs / ${d.patient.gender ?? "—"} • ${d.patient.phone ?? "—"}`)}
+      ${row("Total due (OPD + IPD + Surgery)", money(opdDue + ipdDue + surgDue), true)}
+      ${row("Total collected (receipts + advances)", money(collected), true)}
+    </div>
+    ${sec(`OPD Bills — due ${money(opdDue)}`, `<table><thead><tr><th>Bill</th><th>Date</th><th style="text-align:right">Total</th><th style="text-align:right">Paid</th><th style="text-align:right">Due</th></tr></thead><tbody>${opdRows}</tbody></table>`)}
+    ${sec(`IPD Admissions — due ${money(ipdDue)}`, `<table><thead><tr><th>Admission</th><th>Stay</th><th>Status</th><th style="text-align:right">Gross</th><th style="text-align:right">Collected</th><th style="text-align:right">Due</th></tr></thead><tbody>${ipdRows}</tbody></table>`)}
+    ${sec(`Surgeries — unbilled ${money(surgDue)}`, `<table><thead><tr><th>Case</th><th>Operation</th><th>Status</th><th style="text-align:right">Raised</th><th style="text-align:right">Unbilled</th></tr></thead><tbody>${surgRows}</tbody></table>`)}
+    ${sec(`Money Collected (${d.payments.length})`, `<table><thead><tr><th>Receipt</th><th>Date</th><th>Type</th><th style="text-align:right">Amount</th></tr></thead><tbody>${payRows}</tbody></table>`)}
+    ${footHtml(b, b.billFooter)}`;
+  return toDoc(`Statement ${d.patient.uhid}`, body, accent);
+}
+
+export function printPatientStatement(d: PatientStatementData, settings: Record<string, string> = {}): boolean {
+  const doc = buildPatientStatementHtml(d, settings);
   return openPrintWindow(doc.title, doc.body, doc.accent);
 }
 

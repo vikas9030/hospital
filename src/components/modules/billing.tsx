@@ -36,6 +36,7 @@ import type { Invoice, InvoiceItem, InvoiceTaxLine } from "@/lib/types";
 import { parseServicePrices } from "@/lib/service-pricing";
 import { calcInvoiceTotals, billingDefaults, defaultTaxLines, parseTaxPresets, displayTaxLines } from "@/lib/billing";
 import { IPDBillingPanel } from "@/components/modules/ipd-billing";
+import { PatientBillPanel, PaymentsHistoryCard } from "@/components/modules/patient-bill";
 
 export interface EditableTaxLine {
   name: string;
@@ -45,7 +46,7 @@ export interface EditableTaxLine {
 // Dynamic tax editor: any tax names (GST, CGST, SGST, …) with their own %.
 // Amounts preview from the taxable base; the parent computes via
 // calcInvoiceTotals. Locked once the bill is paid.
-function TaxLinesEditor({ lines, computed, onChange, disabled, lockNote }: {
+export function TaxLinesEditor({ lines, computed, onChange, disabled, lockNote }: {
   lines: EditableTaxLine[];
   computed: InvoiceTaxLine[];
   onChange: (lines: EditableTaxLine[]) => void;
@@ -623,12 +624,16 @@ export function BillingModule() {
       />
 
       <Tabs defaultValue="opd" className="w-full">
-        <TabsList className="grid w-full max-w-md grid-cols-2">
+        <TabsList className="grid w-full max-w-lg grid-cols-3">
           <TabsTrigger value="opd">OPD / All Bills</TabsTrigger>
           <TabsTrigger value="ipd">IPD Admissions Ledger</TabsTrigger>
+          <TabsTrigger value="patient">Patient Bill</TabsTrigger>
         </TabsList>
         <TabsContent value="ipd" className="pt-4">
           <IPDBillingPanel />
+        </TabsContent>
+        <TabsContent value="patient" className="pt-4">
+          <PatientBillPanel />
         </TabsContent>
         <TabsContent value="opd" className="space-y-6 pt-4">
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -1002,6 +1007,7 @@ export function BillingModule() {
           )}
         </CardContent>
       </Card>
+      <PaymentsHistoryCard compact />
       <NewInvoiceDialog open={newInvoiceOpen} onOpenChange={setNewInvoiceOpen} />
       <EditInvoiceDialog key={editTarget?.id ?? "none"} invoice={editTarget} onOpenChange={(o) => { if (!o) setEditTarget(null); }} />
       <CollectMoneyDialog invoice={collectInvoice} onOpenChange={(v) => { if (!v) setCollectInvoice(null); }} title="Collect Payment" />

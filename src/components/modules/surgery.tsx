@@ -56,7 +56,7 @@ function BookSurgeryDialog({ open, onOpenChange, onCreated }: { open: boolean; o
   const currentUser = useAppStore((s) => s.currentUser);
   const { packages } = useSurgeries(branch);
   const [rateCards, setRateCards] = useState<SurgeryRateCard[]>([]);
-  const [form, setForm] = useState({ patientId: "", surgeryName: "", surgeryKey: "", surgeryCategory: "", surgeon: "", department: "", plannedDate: new Date().toISOString().split("T")[0], plannedTime: "09:00", priority: "Elective", theatre: "", anesthesiaType: "", diagnosis: "", packageId: "", estimate: "", advanceRequired: "" });
+  const [form, setForm] = useState({ patientId: "", surgeryName: "", surgeryKey: "", surgeryCategory: "", surgeon: "", department: "", plannedDate: new Date().toISOString().split("T")[0], plannedTime: "09:00", priority: "Elective", theatre: "", anesthesiaType: "", diagnosis: "", packageId: "", estimate: "", advanceRequired: "", advanceMethod: "Cash", collectAdvance: false });
   const [anesCustom, setAnesCustom] = useState(false);
   const [saving, setSaving] = useState(false);
   const patient = patients.find((p) => p.id === form.patientId);
@@ -151,7 +151,32 @@ function BookSurgeryDialog({ open, onOpenChange, onCreated }: { open: boolean; o
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || "Failed to book surgery.");
       onCreated(body);
-      toast({ title: "Surgery booked", description: `${body.caseNo} — ${body.surgeryName} on ${body.plannedDate}${body.admissionId ? " (linked to admission — joins single bill)" : " (day-care — no admission)"}.` });
+      // Collect the advance right here so the money lands in billing history
+      // (payments table + admission ledger) instead of staying a typed number.
+      let advanceNote = "";
+      const advAmount = parseFloat(form.advanceRequired) || 0;
+      if (form.collectAdvance && advAmount > 0) {
+        try {
+          const payRes = await fetch("/api/billing/payments", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              patientId: form.patientId, patientName: patient?.name ?? "",
+              admissionId: body.admissionId || admissionId,
+              amount: advAmount, method: form.advanceMethod, kind: "Advance",
+              notes: `Surgery advance — ${body.caseNo} ${body.surgeryName}`,
+              idempotencyKey: `adv-${body.id}`,
+              receivedBy: currentUser.name, branch,
+            }),
+          });
+          const payBody = await payRes.json();
+          if (!payRes.ok) throw new Error(payBody.error || "Advance failed.");
+          advanceNote = ` Advance ${payBody.receiptNo} ₹${payBody.amount.toLocaleString("en-IN")} collected.`;
+        } catch (e: any) {
+          advanceNote = ` Advance NOT collected: ${e.message}. Collect it from Billing.`;
+        }
+      }
+      toast({ title: "Surgery booked", description: `${body.caseNo} — ${body.surgeryName} on ${body.plannedDate}${body.admissionId ? " (linked to admission — joins single bill)" : " (day-care — no admission)"}.${advanceNote}${body.autoAdded > 0 ? ` ${body.autoAdded} priced line(s) raised.` : ""}` });
       onOpenChange(false);
     } catch (e: any) {
       toast({ title: "Could not book", description: e.message, variant: "destructive" });
@@ -241,6 +266,16 @@ function BookSurgeryDialog({ open, onOpenChange, onCreated }: { open: boolean; o
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2"><Label>Estimate (₹) — auto-filled</Label><Input type="number" value={form.estimate} onChange={(e) => setForm({ ...form, estimate: e.target.value })} placeholder="0" /></div>
             <div className="space-y-2"><Label>Advance required (₹)</Label><Input type="number" value={form.advanceRequired} onChange={(e) => setForm({ ...form, advanceRequired: e.target.value })} placeholder="0" /></div>
+          </div>
+          <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
+            <input id="collect-adv" type="checkbox" className="h-4 w-4" checked={form.collectAdvance} onChange={(e) => setForm({ ...form, collectAdvance: e.target.checked })} />
+            <Label htmlFor="collect-adv" className="text-xs font-normal flex-1">Collect advance now (receipt + billing history)</Label>
+            {form.collectAdvance && (
+              <Select value={form.advanceMethod} onValueChange={(v) => setForm({ ...form, advanceMethod: v })}>
+                <SelectTrigger className="h-8 w-[130px] text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>{["Cash", "UPI", "Card", "Bank Transfer", "Cheque", "Other"].map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+              </Select>
+            )}
           </div>
           <div className="space-y-2"><Label>Package (optional)</Label>
             <Select value={form.packageId || "__none"} onValueChange={(v) => setForm({ ...form, packageId: v === "__none" ? "" : v })}>

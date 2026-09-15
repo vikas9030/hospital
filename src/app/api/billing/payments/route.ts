@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchAdmissionPayments, recordPayment, allocatePayment, auditBilling, getCompleteBill } from "@/lib/ipd-surgery-data";
+import { fetchAdmissionPayments, fetchBranchPayments, recordPayment, allocatePayment, auditBilling, getCompleteBill } from "@/lib/ipd-surgery-data";
 
 export async function GET(req: NextRequest) {
   try {
     const admissionId = req.nextUrl.searchParams.get("admissionId") ?? "";
-    if (!admissionId) return NextResponse.json({ error: "admissionId is required" }, { status: 400 });
-    return NextResponse.json(await fetchAdmissionPayments(admissionId));
+    if (admissionId) return NextResponse.json(await fetchAdmissionPayments(admissionId));
+    // Branch money history: every receipt + advance collected (Billing history tab).
+    const branch = req.nextUrl.searchParams.get("branch") ?? "";
+    if (!branch) return NextResponse.json({ error: "admissionId or branch is required" }, { status: 400 });
+    const patientId = req.nextUrl.searchParams.get("patientId") ?? undefined;
+    const limit = Math.min(500, Math.max(1, Number(req.nextUrl.searchParams.get("limit") ?? 200) || 200));
+    return NextResponse.json(await fetchBranchPayments(branch, patientId, limit));
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

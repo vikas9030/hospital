@@ -18,6 +18,8 @@ import { printCompleteBill, printReceipt, printRefund } from "@/lib/documents";
 import { printInvoice } from "@/lib/invoice-print";
 import type { Admission, CompleteBill, Payment, Refund, SurgeryCaseCharge } from "@/lib/types";
 import { Printer, Plus, Wallet, Undo2, FileCheck } from "lucide-react";
+import { TaxLinesEditor, type EditableTaxLine } from "@/components/modules/billing";
+import { calcInvoiceTotals } from "@/lib/billing";
 
 const CHARGE_CATEGORIES = ["Registration", "Consultation", "Bed", "Nursing", "Surgery", "Operation Theatre", "Anesthesia", "Procedure", "Pharmacy", "Laboratory", "Radiology", "Consumables", "Supplies", "Doctor", "Package", "Other"];
 const PAY_METHODS = ["Cash", "UPI", "Card", "Bank Transfer", "Razorpay", "Insurance", "Cheque", "Other"];
@@ -529,15 +531,31 @@ function FinalizeDialog({ bill, branch, onClose, onSaved }: { bill: CompleteBill
   const currentUser = useAppStore((s) => s.currentUser);
   const [discountPercent, setDiscountPercent] = useState("0");
   const [discountReason, setDiscountReason] = useState("");
+  const [taxLines, setTaxLines] = useState<EditableTaxLine[]>([]);
   const [saving, setSaving] = useState(false);
   const [surgeryUnbilled, setSurgeryUnbilled] = useState(0);
-  const unbilled = bill.charges.filter((c) => !c.billed).length;
+  const [surgeryUnbilledAmount, setSurgeryUnbilledAmount] = useState(0);
+  const unbilledCharges = bill.charges.filter((c) => !c.billed);
+  const unbilled = unbilledCharges.length;
+  const wardSubtotal = unbilledCharges.reduce((s, c) => s + Number(c.net || 0), 0);
   useEffect(() => {
     fetch(`/api/surgeries/charges?admissionId=${encodeURIComponent(bill.admission.id)}`)
       .then((r) => (r.ok ? r.json() : []))
-      .then((d) => setSurgeryUnbilled(Array.isArray(d) ? d.filter((c: { billed?: boolean }) => !c.billed).length : 0))
-      .catch(() => setSurgeryUnbilled(0));
+      .then((d) => {
+        const list = Array.isArray(d) ? d.filter((c: { billed?: boolean }) => !c.billed) : [];
+        setSurgeryUnbilled(list.length);
+        setSurgeryUnbilledAmount(list.reduce((s: number, c: { amount?: number }) => s + Number(c.amount || 0), 0));
+      })
+      .catch(() => { setSurgeryUnbilled(0); setSurgeryUnbilledAmount(0); });
   }, [bill.admission.id]);
+  const preview = calcInvoiceTotals(wardSubtotal + surgeryUnbilledAmount, {
+    discountPercent: parseFloat(discountPercent) || 0,
+    taxes: taxLines.map((l) => ({ name: l.name, percent: parseFloat(l.percent) || 0 })),
+  });
+  const quickTax = (name: string, percent: number) => {
+    if (taxLines.some((l) => l.name.toLowerCase() === name.toLowerCase())) return;
+    setTaxLines([...taxLines, { name, percent: String(percent) }]);
+  };
   const submit = async () => {
     setSaving(true);
     try {
@@ -548,6 +566,7 @@ function FinalizeDialog({ bill, branch, onClose, onSaved }: { bill: CompleteBill
           admissionId: bill.admission.id,
           discountPercent: parseFloat(discountPercent) || 0,
           discountReason,
+          taxes: taxLines.map((l) => ({ name: l.name, percent: parseFloat(l.percent) || 0 })),
           discountThreshold: 20,
           actorRole: currentUser.role,
           actorName: currentUser.name,
@@ -565,11 +584,34 @@ function FinalizeDialog({ bill, branch, onClose, onSaved }: { bill: CompleteBill
   };
   return (
     <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Finalize Discharge Bill</DialogTitle><DialogDescription>{unbilled} ward + {surgeryUnbilled} surgery/OT unbilled charge(s) roll into ONE single Final invoice (beds + surgery together). Discount above 20% needs Admin.</DialogDescription></DialogHeader>
         <div className="grid gap-3 py-4">
-          <div className="space-y-2"><Label>Discount %</Label><Input type="number" min={0} max={100} value={discountPercent} onChange={(e) => setDiscountPercent(e.target.value)} /></div>
-          <div className="space-y-2"><Label>Discount reason</Label><Input value={discountReason} onChange={(e) => setDiscountReason(e.target.value)} placeholder="Required when discount > 0" /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2"><Label>Discount %</Label><Input type="number" min={0} max={100} value={discountPercent} onChange={(e) => setDiscountPercent(e.target.value)} /></div>
+            <div className="space-y-2"><Label>Discount reason</Label><Input value={discountReason} onChange={(e) => setDiscountReason(e.target.value)} placeholder="Required if > 0" /></div>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <span className="text-[11px] text-muted-foreground w-full">Quick GST:</span>
+            {[
+              { label: "GST 5%", lines: [{ name: "GST", percent: 5 }] },
+              { label: "GST 12%", lines: [{ name: "GST", percent: 12 }] },
+              { label: "GST 18%", lines: [{ name: "GST", percent: 18 }] },
+              { label: "CGST 6% + SGST 6%", lines: [{ name: "CGST", percent: 6 }, { name: "SGST", percent: 6 }] },
+              { label: "CGST 9% + SGST 9%", lines: [{ name: "CGST", percent: 9 }, { name: "SGST", percent: 9 }] },
+            ].map((q) => (
+              <Button key={q.label} size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => q.lines.forEach((l) => quickTax(l.name, l.percent))}>{q.label}</Button>
+            ))}
+          </div>
+          <TaxLinesEditor lines={taxLines} computed={preview.taxes} onChange={setTaxLines} />
+          <div className="rounded-lg bg-muted/50 p-3 text-xs space-y-1">
+            <div className="flex justify-between"><span className="text-muted-foreground">Subtotal (ward + surgery/OT)</span><span>₹{preview.subtotal.toLocaleString("en-IN")}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Discount ({preview.discountPercent}%)</span><span>− ₹{preview.discount.toLocaleString("en-IN")}</span></div>
+            {preview.taxes.map((t, i) => (
+              <div key={i} className="flex justify-between"><span className="text-muted-foreground">{t.name} ({t.percent}%)</span><span>+ ₹{t.amount.toLocaleString("en-IN")}</span></div>
+            ))}
+            <div className="flex justify-between text-sm font-bold pt-1 border-t"><span>Final Total</span><span>₹{preview.total.toLocaleString("en-IN")}</span></div>
+          </div>
           <p className="text-[11px] text-muted-foreground">Totals recompute server-side. Finalized bills are read-only — Admin authorization required for corrections.</p>
         </div>
         <DialogFooter><DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose><Button onClick={submit} disabled={saving}>{saving ? "Finalizing..." : "Generate Final Bill"}</Button></DialogFooter>

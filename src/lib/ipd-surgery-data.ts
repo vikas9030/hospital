@@ -230,6 +230,15 @@ export async function addAdmissionCharge(c: Partial<AdmissionCharge> & { admissi
 
 // ---------- Payments (idempotent) ----------
 
+/** Branch money history (receipts + advances), newest first — for Billing history. */
+export async function fetchBranchPayments(branch: string, patientId?: string, limit = 200): Promise<Payment[]> {
+  let q = supabaseAdmin.from("payments").select("*").eq("branch", branch).order("occurred_at", { ascending: false }).limit(limit);
+  if (patientId) q = q.eq("patient_id", patientId);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data ?? []).map(mapPayment);
+}
+
 export async function fetchAdmissionPayments(admissionId: string): Promise<Payment[]> {
   const { data, error } = await supabaseAdmin.from("payments")
     .select("*").eq("admission_id", admissionId).order("occurred_at", { ascending: true });
@@ -567,7 +576,20 @@ export async function ensureSurgeryAutoCharges(caseId: string, actor: string): P
   const surgery = await getSurgery(caseId);
   if (!surgery) throw new Error("Surgery case not found.");
   const card = await findRateCardFor(surgery.surgeryName, surgery.branch);
-  if (!card) return [];
+  // No operation price card but an estimate exists (e.g. manually booked):
+  // raise ONE procedure-fee line for the estimate so the amount is never
+  // invisible to billing. Re-runs skip it once present.
+  if (!card) {
+    if (num(surgery.estimate) <= 0) return [];
+    const existing = await fetchSurgeryCharges(caseId);
+    if (existing.some((c) => c.auto)) return [];
+    return [await addSurgeryCharge({
+      caseId, admissionId: surgery.admissionId,
+      label: `${surgery.surgeryName} — procedure fee (estimate)`,
+      category: "Surgery", amount: num(surgery.estimate), auto: true,
+      createdBy: actor, branch: surgery.branch,
+    })];
+  }
   const existing = await fetchSurgeryCharges(caseId);
   const has = (label: string) => existing.some((c) => c.auto && c.label.toLowerCase() === label.toLowerCase());
   const wants: { label: string; category: string; amount: number; gate: boolean }[] = [
