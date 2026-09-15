@@ -294,6 +294,9 @@ function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: bool
     department: "",
     bedId: preselectedBed?.id ?? "",
     diagnosis: "",
+    admissionDate: todayIso(),
+    expectedLeave: "",
+    payMode: "Cash",
   }));
   const [wardFilter, setWardFilter] = useState(preselectedBed?.ward ?? "");
   const [showAddBed, setShowAddBed] = useState(false);
@@ -365,7 +368,7 @@ function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: bool
           status: "Occupied",
           patientId: form.patientId,
           patientName: selectedPatient?.name ?? "",
-          admittedOn: todayIso(),
+          admittedOn: form.admissionDate || todayIso(),
           doctorName: form.doctorName,
           department: form.department || selectedDoctor?.department || "",
           diagnosis: form.diagnosis,
@@ -404,6 +407,9 @@ function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: bool
             room: (savedBed as Bed).type ?? "",
             ward: savedBed.ward,
             bedRate: savedBed.dailyRate ?? 0,
+            admissionAt: form.admissionDate ? new Date(`${form.admissionDate}T00:00:00`).toISOString() : undefined,
+            expectedDischargeDate: form.expectedLeave || undefined,
+            payMode: form.payMode as "Cash" | "Insurance" | "Corporate" | "TPA" | "Government Scheme",
             notes: form.diagnosis,
             branch: activeBranch,
             createdBy: currentUserName,
@@ -499,6 +505,12 @@ function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: bool
           </div>
         )}
         <div className="space-y-2"><Label>Diagnosis</Label><Input value={form.diagnosis} onChange={(e) => setForm({ ...form, diagnosis: e.target.value })} placeholder="Primary diagnosis" /></div>
+        <div className="grid grid-cols-3 gap-4">
+          <div className="space-y-2"><Label>Joining date</Label><Input type="date" className="h-9" value={form.admissionDate} onChange={(e) => setForm({ ...form, admissionDate: e.target.value })} /></div>
+          <div className="space-y-2"><Label>Expected leave</Label><Input type="date" className="h-9" value={form.expectedLeave} onChange={(e) => setForm({ ...form, expectedLeave: e.target.value })} /></div>
+          <div className="space-y-2"><Label>Pay mode</Label><Select value={form.payMode} onValueChange={(v) => setForm({ ...form, payMode: v })}><SelectTrigger className="h-9"><SelectValue /></SelectTrigger><SelectContent>{["Cash", "Insurance", "Corporate", "TPA", "Government Scheme"].map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent></Select></div>
+        </div>
+        <p className="text-[11px] text-muted-foreground">Bed amount accrues automatically: joining → leave × daily rate, straight into the single bill.</p>
       </div>
       <DialogFooter><DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose><Button onClick={handleSubmit} disabled={saving}>{saving ? "Admitting..." : "Admit Patient"}</Button></DialogFooter>
       </DialogContent>
@@ -588,8 +600,9 @@ function DischargeDialog({ open, onOpenChange, bed, onDischarged }: {
         }),
       });
       if (!bedRes.ok) throw new Error("Invoice created, but freeing the bed failed.");
-      // Close the matching admissions-ledger row (best-effort) and post the
-      // bed stay as an unbilled admission charge so the IPD ledger stays complete.
+      // Close the matching admissions-ledger row (best-effort). Bed accrual is
+      // automatic: discharging re-runs joining → leave × rate, so the full stay
+      // lands in the single bill with no duplicate manual post.
       try {
         const admRes = await fetch(`/api/admissions?branch=${encodeURIComponent(bed.branch)}`);
         const adms = admRes.ok ? await admRes.json() : [];
@@ -598,22 +611,8 @@ function DischargeDialog({ open, onOpenChange, bed, onDischarged }: {
           await fetch("/api/admissions", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: match.id, status: "Discharged", billingStatus: "Discharge Pending", actorName: useAppStore.getState().currentUser?.name ?? "Staff" }),
+            body: JSON.stringify({ id: match.id, status: "Discharged", dischargeAt: new Date(`${dischargeOn}T00:00:00`).toISOString(), billingStatus: "Discharge Pending", actorName: useAppStore.getState().currentUser?.name ?? "Staff" }),
           });
-          await fetch("/api/admission-charges", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              admissionId: match.id,
-              patientId: bed.patientId ?? "",
-              category: "Bed",
-              description: `Bed ${bed.number} (${bed.ward}) • ${admittedOn} → ${dischargeOn} (${days}d × ₹${rate})`,
-              quantity: days,
-              rate,
-              createdBy: useAppStore.getState().currentUser?.name ?? "",
-              branch: bed.branch,
-            }),
-          }).catch(() => {});
         }
       } catch { /* ledger mirror is best-effort */ }
       onDischarged(invoice);

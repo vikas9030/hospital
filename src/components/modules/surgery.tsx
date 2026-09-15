@@ -20,7 +20,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAppStore } from "@/store/app-store";
 import { canEditModule, isAdmin } from "@/lib/utils";
 import { printSurgerySchedule } from "@/lib/documents";
-import type { SurgeryCase, SurgeryPackage } from "@/lib/types";
+import type { SurgeryCase, SurgeryPackage, SurgeryRateCard } from "@/lib/types";
 
 const STATUSES = ["Scheduled", "Pre-op", "Ready", "In OT", "Completed", "Post-op", "Discharged", "Cancelled"] as const;
 
@@ -181,10 +181,13 @@ function CaseDetailDialog({ surgery, onClose, onUpdated }: { surgery: SurgeryCas
   const [status, setStatus] = useState<SurgeryCase["status"]>(surgery?.status ?? "Scheduled");
   const [chargeForm, setChargeForm] = useState({ label: "", category: "Surgery", amount: "" });
   const [consumableForm, setConsumableForm] = useState({ item: "", quantity: "1", unitPrice: "" });
+  const [team, setTeam] = useState({ surgeon: surgery?.surgeon ?? "", assistantSurgeon: surgery?.assistantSurgeon ?? "", anesthesiaType: surgery?.anesthesiaType ?? "", theatre: surgery?.theatre ?? "" });
+  const [teamSaving, setTeamSaving] = useState(false);
 
   useEffect(() => {
     if (!surgery) return;
     setStatus(surgery.status);
+    setTeam({ surgeon: surgery.surgeon ?? "", assistantSurgeon: surgery.assistantSurgeon ?? "", anesthesiaType: surgery.anesthesiaType ?? "", theatre: surgery.theatre ?? "" });
     (async () => {
       const [ch, co] = await Promise.all([
         fetch(`/api/surgeries/charges?caseId=${encodeURIComponent(surgery.id)}`).then((r) => r.json()).catch(() => []),
@@ -231,6 +234,46 @@ function CaseDetailDialog({ surgery, onClose, onUpdated }: { surgery: SurgeryCas
       setChargeForm({ label: "", category: "Surgery", amount: "" });
     } catch (e: any) {
       toast({ title: "Failed", description: e.message, variant: "destructive" });
+    }
+  };
+
+  // Assign the operation team: surgeon / assistant / anesthesia / theatre.
+  // Saving auto-adds the matching priced components from the operation rate
+  // card, add-by-add — only gaps are filled, never duplicates.
+  const saveTeam = async () => {
+    setTeamSaving(true);
+    try {
+      const res = await fetch("/api/surgeries", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: surgery.id, ...team, actorName: currentUser.name, actorRole: currentUser.role }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Save failed.");
+      onUpdated(body);
+      const fresh = await fetch(`/api/surgeries/charges?caseId=${encodeURIComponent(surgery.id)}`).then((r) => r.json());
+      if (Array.isArray(fresh)) setCharges(fresh);
+      toast({ title: "Team assigned", description: body.autoAdded > 0 ? `${body.autoAdded} priced component(s) auto-added from the rate card.` : "Team saved. No new priced components (already present or no rate card)." });
+    } catch (e: any) {
+      toast({ title: "Save failed", description: e.message, variant: "destructive" });
+    }
+    setTeamSaving(false);
+  };
+
+  const autoPrice = async () => {
+    try {
+      const res = await fetch("/api/surgeries/charges", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ caseId: surgery.id, autoPrice: true, createdBy: currentUser.name, branch: surgery.branch }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed. Set the operation price first (Operation Prices tab).");
+      const fresh = await fetch(`/api/surgeries/charges?caseId=${encodeURIComponent(surgery.id)}`).then((r) => r.json());
+      if (Array.isArray(fresh)) setCharges(fresh);
+      toast({ title: "Auto-priced", description: `${body.length ?? 0} priced component(s) added from the rate card.` });
+    } catch (e: any) {
+      toast({ title: "Auto-price failed", description: e.message, variant: "destructive" });
     }
   };
 
@@ -305,13 +348,27 @@ function CaseDetailDialog({ surgery, onClose, onUpdated }: { surgery: SurgeryCas
             <SelectContent>{STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
           </Select>
           <Button size="sm" variant="outline" onClick={() => printSurgerySchedule({ ...surgery, status: status as SurgeryCase["status"] }, settings)}><Printer className="h-3.5 w-3.5 mr-1.5" /> Schedule Sheet</Button>
+          <Button size="sm" variant="outline" onClick={autoPrice}><Plus className="h-3.5 w-3.5 mr-1.5" /> Auto Prices</Button>
           {surgery.packageId && <Button size="sm" variant="outline" onClick={applyPackage}><Package className="h-3.5 w-3.5 mr-1.5" /> Apply Package</Button>}
         </div>
         <Tabs defaultValue="charges">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="charges">Charge Components ({charges.length})</TabsTrigger>
+            <TabsTrigger value="team">Team & Operation</TabsTrigger>
             <TabsTrigger value="consumables">Consumables & Implants ({consumables.length})</TabsTrigger>
           </TabsList>
+          <TabsContent value="team" className="space-y-3 pt-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2"><Label>Operating surgeon *</Label><Input className="h-8 text-xs" value={team.surgeon} onChange={(e) => setTeam({ ...team, surgeon: e.target.value })} placeholder="Dr. …" /></div>
+              <div className="space-y-2"><Label>Assistant surgeon</Label><Input className="h-8 text-xs" value={team.assistantSurgeon} onChange={(e) => setTeam({ ...team, assistantSurgeon: e.target.value })} placeholder="Dr. …" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2"><Label>Anesthesia</Label><Input className="h-8 text-xs" value={team.anesthesiaType} onChange={(e) => setTeam({ ...team, anesthesiaType: e.target.value })} placeholder="General / Spinal" /></div>
+              <div className="space-y-2"><Label>Theatre</Label><Input className="h-8 text-xs" value={team.theatre} onChange={(e) => setTeam({ ...team, theatre: e.target.value })} placeholder="OT-1" /></div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">Saving assigns the team and auto-adds the matching priced components from the operation price card — surgeon fee, assistant fee, anesthesia, OT — each as its own bill line.</p>
+            <Button size="sm" onClick={saveTeam} disabled={teamSaving}>{teamSaving ? "Assigning..." : "Assign Team + Auto-Add Prices"}</Button>
+          </TabsContent>
           <TabsContent value="charges" className="space-y-3 pt-3">
             <div className="grid grid-cols-[1fr_130px_110px_auto] gap-1.5">
               <Input className="h-8 text-xs" placeholder="Component label" value={chargeForm.label} onChange={(e) => setChargeForm({ ...chargeForm, label: e.target.value })} />
@@ -349,6 +406,139 @@ function CaseDetailDialog({ surgery, onClose, onUpdated }: { surgery: SurgeryCas
   );
 }
 
+function RateCardsPanel() {
+  const { toast } = useToast();
+  const { branch } = useBranchData();
+  const currentUser = useAppStore((s) => s.currentUser);
+  const canManage = isAdmin(currentUser.role);
+  const [cards, setCards] = useState<SurgeryRateCard[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<SurgeryRateCard | null>(null);
+  const [form, setForm] = useState({ operationName: "", surgeryCategory: "", surgeonFee: "", assistantFee: "", anesthesiaCharge: "", otCharge: "", nursingCharge: "", consumablesEstimate: "" });
+  const [saving, setSaving] = useState(false);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/surgeries/rate-card?branch=${encodeURIComponent(branch)}`);
+      const data = await res.json();
+      if (Array.isArray(data)) setCards(data);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branch]);
+
+  const openNew = () => {
+    setEditing(null);
+    setForm({ operationName: "", surgeryCategory: "", surgeonFee: "", assistantFee: "", anesthesiaCharge: "", otCharge: "", nursingCharge: "", consumablesEstimate: "" });
+    setOpen(true);
+  };
+
+  const openEdit = (c: SurgeryRateCard) => {
+    setEditing(c);
+    setForm({
+      operationName: c.operationName, surgeryCategory: c.surgeryCategory,
+      surgeonFee: String(c.surgeonFee || ""), assistantFee: String(c.assistantFee || ""),
+      anesthesiaCharge: String(c.anesthesiaCharge || ""), otCharge: String(c.otCharge || ""),
+      nursingCharge: String(c.nursingCharge || ""), consumablesEstimate: String(c.consumablesEstimate || ""),
+    });
+    setOpen(true);
+  };
+
+  const submit = async () => {
+    if (!form.operationName.trim()) {
+      toast({ title: "Missing operation", description: "Operation name is required.", variant: "destructive" });
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        operationName: form.operationName.trim(), surgeryCategory: form.surgeryCategory,
+        surgeonFee: parseFloat(form.surgeonFee) || 0, assistantFee: parseFloat(form.assistantFee) || 0,
+        anesthesiaCharge: parseFloat(form.anesthesiaCharge) || 0, otCharge: parseFloat(form.otCharge) || 0,
+        nursingCharge: parseFloat(form.nursingCharge) || 0, consumablesEstimate: parseFloat(form.consumablesEstimate) || 0,
+        branch, actorRole: currentUser.role, createdBy: currentUser.name, actorName: currentUser.name,
+      };
+      const res = await fetch("/api/surgeries/rate-card", {
+        method: editing ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editing ? { ...payload, id: editing.id } : payload),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Save failed.");
+      toast({ title: editing ? "Price updated" : "Price saved", description: `${body.operationName} — new bookings auto-expand these prices.` });
+      setOpen(false);
+      refresh();
+    } catch (e: any) {
+      toast({ title: "Save failed", description: e.message, variant: "destructive" });
+    }
+    setSaving(false);
+  };
+
+  const total = (c: SurgeryRateCard) => c.surgeonFee + c.assistantFee + c.anesthesiaCharge + c.otCharge + c.nursingCharge;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Operation Prices {loading ? "— loading…" : `(${cards.length})`}</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">Booking a matching operation auto-adds surgeon / assistant / anesthesia / OT / nursing lines to the bill, one by one.</p>
+          </div>
+          {canManage && <Button size="sm" onClick={openNew}><Plus className="h-3.5 w-3.5 mr-1.5" /> New Price</Button>}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {cards.map((c) => (
+          <div key={c.id} className="flex items-center justify-between rounded-lg border px-3 py-2.5 text-xs gap-2">
+            <div>
+              <p className="text-sm font-semibold">{c.operationName} {c.surgeryCategory && <span className="font-normal text-muted-foreground">• {c.surgeryCategory}</span>}</p>
+              <p className="text-[11px] text-muted-foreground">
+                Surgeon ₹{c.surgeonFee.toLocaleString("en-IN")} • Asst ₹{c.assistantFee.toLocaleString("en-IN")} • Anes ₹{c.anesthesiaCharge.toLocaleString("en-IN")} • OT ₹{c.otCharge.toLocaleString("en-IN")} • Nursing ₹{c.nursingCharge.toLocaleString("en-IN")}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Badge variant="outline">Total ₹{total(c).toLocaleString("en-IN")}</Badge>
+              {canManage && <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => openEdit(c)}>Edit</Button>}
+            </div>
+          </div>
+        ))}
+        {cards.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">{loading ? "Loading…" : "No operation prices yet. Add one to enable automatic priced billing."}</p>}
+      </CardContent>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle>{editing ? "Edit Operation Price" : "New Operation Price"}</DialogTitle><DialogDescription>Default priced breakup for this operation.</DialogDescription></DialogHeader>
+          <div className="grid gap-3 py-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2"><Label>Operation *</Label><Input value={form.operationName} onChange={(e) => setForm({ ...form, operationName: e.target.value })} placeholder="e.g. Appendectomy" /></div>
+              <div className="space-y-2"><Label>Category</Label><Input value={form.surgeryCategory} onChange={(e) => setForm({ ...form, surgeryCategory: e.target.value })} placeholder="General / Ortho" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2"><Label>Surgeon fee ₹</Label><Input type="number" value={form.surgeonFee} onChange={(e) => setForm({ ...form, surgeonFee: e.target.value })} placeholder="0" /></div>
+              <div className="space-y-2"><Label>Assistant fee ₹</Label><Input type="number" value={form.assistantFee} onChange={(e) => setForm({ ...form, assistantFee: e.target.value })} placeholder="0" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2"><Label>Anesthesia ₹</Label><Input type="number" value={form.anesthesiaCharge} onChange={(e) => setForm({ ...form, anesthesiaCharge: e.target.value })} placeholder="0" /></div>
+              <div className="space-y-2"><Label>OT / theatre ₹</Label><Input type="number" value={form.otCharge} onChange={(e) => setForm({ ...form, otCharge: e.target.value })} placeholder="0" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2"><Label>Nursing ₹</Label><Input type="number" value={form.nursingCharge} onChange={(e) => setForm({ ...form, nursingCharge: e.target.value })} placeholder="0" /></div>
+              <div className="space-y-2"><Label>Consumables est. ₹</Label><Input type="number" value={form.consumablesEstimate} onChange={(e) => setForm({ ...form, consumablesEstimate: e.target.value })} placeholder="0" /></div>
+            </div>
+          </div>
+          <DialogFooter><DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose><Button onClick={submit} disabled={saving}>{saving ? "Saving..." : "Save Price"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}
+
 export function SurgeryModule() {
   const currentUser = useAppStore((s) => s.currentUser);
   const { branch } = useBranchData();
@@ -383,6 +573,15 @@ export function SurgeryModule() {
         <StatCard title="Emergency Open" value={emergencyCount.toString()} icon={Scissors} color="destructive" />
         <StatCard title="Packages" value={packages.filter((p) => p.active).length.toString()} icon={Package} color="success" subtitle={`${packages.length} configured`} />
       </div>
+      <Tabs defaultValue="cases">
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="cases">Cases</TabsTrigger>
+          <TabsTrigger value="prices">Operation Prices</TabsTrigger>
+        </TabsList>
+        <TabsContent value="prices" className="pt-4">
+          <RateCardsPanel />
+        </TabsContent>
+        <TabsContent value="cases" className="pt-4">
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Cases {loading ? "— loading…" : `(${filtered.length})`}</CardTitle></CardHeader>
         <CardContent className="space-y-3">
@@ -431,6 +630,8 @@ export function SurgeryModule() {
       </Card>
       {bookOpen && <BookSurgeryDialog open onOpenChange={setBookOpen} onCreated={(c) => setCases((l) => [c, ...l])} />}
       {selected && <CaseDetailDialog surgery={selected} onClose={() => setSelected(null)} onUpdated={(c) => setCases((l) => l.map((x) => (x.id === c.id ? c : x)))} />}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

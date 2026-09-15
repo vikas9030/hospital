@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchAdmissionCharges, addAdmissionCharge, auditBilling } from "@/lib/ipd-surgery-data";
+import { fetchAdmissionCharges, addAdmissionCharge, deleteAdmissionCharge, auditBilling } from "@/lib/ipd-surgery-data";
 
 export async function GET(req: NextRequest) {
   try {
@@ -24,5 +24,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(created, { status: 201 });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
+
+// Corrections: delete one UNBILLED charge (Admin only). Billed history is locked.
+export async function DELETE(req: NextRequest) {
+  try {
+    const body = await req.json();
+    if (!body.id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+    if (body.actorRole !== "Admin") {
+      return NextResponse.json({ error: "Only Admin can delete a charge." }, { status: 403 });
+    }
+    await deleteAdmissionCharge(body.id);
+    await auditBilling({
+      actor: body.actorName || "Admin", action: "CHARGE_DELETED", branch: body.branch || "",
+      admissionId: body.admissionId, details: `Unbilled charge ${body.id} deleted (correction).`,
+    });
+    return NextResponse.json({ success: true });
+  } catch (e: any) {
+    const status = /locked/i.test(e.message ?? "") ? 422 : 500;
+    return NextResponse.json({ error: e.message }, { status });
   }
 }

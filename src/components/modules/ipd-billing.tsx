@@ -36,10 +36,28 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
   const [payOpen, setPayOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [editAdmissionOpen, setEditAdmissionOpen] = useState(false);
 
   const canCharge = canCreateInvoice(currentUser.role);
   const canCollect = canCollectPayment(currentUser.role);
   const canRefundApprove = isAdmin(currentUser.role) || currentUser.role === "Accountant";
+  const canDeleteCharge = isAdmin(currentUser.role);
+
+  const deleteCharge = async (chargeId: string) => {
+    try {
+      const res = await fetch("/api/admission-charges", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: chargeId, actorRole: currentUser.role, actorName: currentUser.name, branch, admissionId: selectedId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Delete failed.");
+      toast({ title: "Charge deleted", description: "Unbilled charge removed (correction)." });
+      refreshBill(selectedId);
+    } catch (e: any) {
+      toast({ title: "Delete failed", description: e.message, variant: "destructive" });
+    }
+  };
 
   const refreshAdmissions = async () => {
     try {
@@ -126,6 +144,14 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
                 ))}
               </div>
             )}
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs">
+              <span><span className="text-muted-foreground">Joining: </span><strong>{(bill.admission.admissionAt || "").split("T")[0] || "—"}</strong></span>
+              <span><span className="text-muted-foreground">→ Leave: </span><strong>{(bill.admission.dischargeAt || "").split("T")[0] || (bill.admission.expectedDischargeDate || "").split("T")[0] || "open stay"}</strong></span>
+              <Badge variant="outline" className="text-[10px]">{bill.admission.status}</Badge>
+              <Badge variant="outline" className="text-[10px]">{bill.admission.billingStatus}</Badge>
+              {bill.admission.bedRate > 0 && <span><span className="text-muted-foreground">Bed: </span><strong>₹{bill.admission.bedRate.toLocaleString("en-IN")}/day</strong></span>}
+              {canCharge && <Button size="sm" variant="outline" className="h-7 text-[11px] ml-auto" onClick={() => setEditAdmissionOpen(true)}>Edit / Extend Stay</Button>}
+            </div>
             <div className="flex flex-wrap gap-2">
               {canCharge && <Button size="sm" onClick={() => setChargeOpen(true)}><Plus className="h-3.5 w-3.5 mr-1.5" /> Add Charge</Button>}
               {canCollect && <Button size="sm" variant="outline" onClick={() => setPayOpen(true)}><Wallet className="h-3.5 w-3.5 mr-1.5" /> Collect / Advance</Button>}
@@ -133,6 +159,19 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
               {canCharge && <Button size="sm" variant="outline" onClick={() => setFinalizeOpen(true)}><FileCheck className="h-3.5 w-3.5 mr-1.5" /> Finalize Bill</Button>}
               <Button size="sm" variant="outline" onClick={() => printCompleteBill(bill, settings)}><Printer className="h-3.5 w-3.5 mr-1.5" /> Print Ledger</Button>
             </div>
+            {bill.charges.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold text-muted-foreground">WARD CHARGES ({bill.charges.length}) — unbilled lines correctable by Admin</p>
+                {bill.charges.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between rounded-lg border px-3 py-2 text-xs gap-2">
+                    <span className="min-w-0">{c.category} — {c.description} <span className="text-muted-foreground">• {c.quantity} × ₹{(c.rate ?? 0).toLocaleString("en-IN")} = ₹{(c.net ?? 0).toLocaleString("en-IN")}{c.billed ? " • billed" : " • unbilled"}</span></span>
+                    {!c.billed && canDeleteCharge && (
+                      <Button size="sm" variant="ghost" className="h-7 text-[11px] text-destructive shrink-0" onClick={() => deleteCharge(c.id)}>Delete</Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {!compact && (
               <div className="rounded-lg border overflow-hidden">
                 <Table>
@@ -205,6 +244,7 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
             )}
           </>
         )}
+        {editAdmissionOpen && bill && <EditAdmissionDialog admission={bill.admission} branch={branch} onClose={() => setEditAdmissionOpen(false)} onSaved={() => { setEditAdmissionOpen(false); refreshBill(selectedId); refreshAdmissions(); }} />}
         {chargeOpen && bill && <ChargeDialog admission={bill.admission} branch={branch} onClose={() => setChargeOpen(false)} onSaved={() => { setChargeOpen(false); refreshBill(selectedId); }} />}
         {payOpen && bill && <PayDialog admission={bill.admission} outstanding={bill.outstanding} branch={branch} onClose={() => setPayOpen(false)} onSaved={(p) => { setPayOpen(false); refreshBill(selectedId); printReceipt(p, settings); }} />}
         {refundOpen && bill && <RefundDialog admission={bill.admission} branch={branch} onClose={() => setRefundOpen(false)} onSaved={() => { setRefundOpen(false); refreshBill(selectedId); }} />}
@@ -212,6 +252,99 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
         {admission && <p className="text-[11px] text-muted-foreground">Admission {admission.admissionNo} • {admission.status} • {admission.billingStatus} • Bed {admission.bedNumber || "—"} • Pay mode {admission.payMode}</p>}
       </CardContent>
     </Card>
+  );
+}
+
+const ADMISSION_STATUSES = ["Admitted", "Discharged", "Transferred", "DAMA", "Deceased", "Cancelled"] as const;
+const PAY_MODES = ["Cash", "Insurance", "Corporate", "TPA", "Government Scheme"] as const;
+
+// Edit / extend the stay: joining → leave dates, status, bed rate, doctor.
+// Saving re-runs bed accrual server-side, so extending the leave date or
+// changing the rate automatically adds the amount to the bill.
+function EditAdmissionDialog({ admission, branch, onClose, onSaved }: { admission: Admission; branch: string; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const currentUser = useAppStore((s) => s.currentUser);
+  const [form, setForm] = useState({
+    admissionAt: (admission.admissionAt || "").split("T")[0],
+    expectedDischargeDate: (admission.expectedDischargeDate || "").split("T")[0],
+    dischargeAt: (admission.dischargeAt || "").split("T")[0],
+    status: admission.status,
+    bedRate: String(admission.bedRate ?? ""),
+    bedNumber: admission.bedNumber ?? "",
+    doctorName: admission.doctorName ?? "",
+    department: admission.department ?? "",
+    payMode: admission.payMode ?? "Cash",
+    notes: admission.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/admissions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: admission.id,
+          admissionAt: form.admissionAt || undefined,
+          expectedDischargeDate: form.expectedDischargeDate || undefined,
+          dischargeAt: form.dischargeAt || undefined,
+          status: form.status,
+          bedRate: form.bedRate === "" ? undefined : parseFloat(form.bedRate) || 0,
+          bedNumber: form.bedNumber,
+          doctorName: form.doctorName,
+          department: form.department,
+          payMode: form.payMode,
+          notes: form.notes,
+          actorName: currentUser.name,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Save failed.");
+      toast({ title: "Stay updated", description: "Bed amount re-accrued automatically from the new dates × rate." });
+      onSaved();
+    } catch (e: any) {
+      toast({ title: "Save failed", description: e.message, variant: "destructive" });
+    }
+    setSaving(false);
+  };
+  return (
+    <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>Edit Stay — {admission.admissionNo}</DialogTitle><DialogDescription>Joining → leave dates, status, bed rate. The bill follows automatically.</DialogDescription></DialogHeader>
+        <div className="grid gap-3 py-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2"><Label>Joining (admitted)</Label><Input type="date" value={form.admissionAt} onChange={(e) => setForm({ ...form, admissionAt: e.target.value })} /></div>
+            <div className="space-y-2"><Label>Expected leave</Label><Input type="date" value={form.expectedDischargeDate} onChange={(e) => setForm({ ...form, expectedDischargeDate: e.target.value })} /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2"><Label>Actual discharge</Label><Input type="date" value={form.dischargeAt} onChange={(e) => setForm({ ...form, dischargeAt: e.target.value })} /></div>
+            <div className="space-y-2"><Label>Status</Label>
+              <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v as Admission["status"] })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{ADMISSION_STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2"><Label>Bed rate ₹/day</Label><Input type="number" value={form.bedRate} onChange={(e) => setForm({ ...form, bedRate: e.target.value })} /></div>
+            <div className="space-y-2"><Label>Bed</Label><Input value={form.bedNumber} onChange={(e) => setForm({ ...form, bedNumber: e.target.value })} /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2"><Label>Doctor</Label><Input value={form.doctorName} onChange={(e) => setForm({ ...form, doctorName: e.target.value })} /></div>
+            <div className="space-y-2"><Label>Department</Label><Input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} /></div>
+          </div>
+          <div className="space-y-2"><Label>Pay mode</Label>
+            <Select value={form.payMode} onValueChange={(v) => setForm({ ...form, payMode: v as Admission["payMode"] })}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>{PAY_MODES.map((m) => <SelectItem key={m} value={m}>{m}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
+          <p className="text-[11px] text-muted-foreground">Extending the leave date (or raising the rate) adds bed days to the bill on save. Shortening rebuilds the unbilled auto rows. Billed history stays locked.</p>
+        </div>
+        <DialogFooter><DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose><Button onClick={submit} disabled={saving}>{saving ? "Saving..." : "Save + Re-accrue Bill"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

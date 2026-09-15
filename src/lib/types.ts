@@ -849,6 +849,23 @@ export interface SurgeryPackageItem {
   rate: number;
 }
 
+/** Operation price master (migration 033): default priced breakup per operation.
+ *  Booking auto-expands the matching card into charge components, add-by-add. */
+export interface SurgeryRateCard {
+  id: string;
+  operationName: string;
+  surgeryCategory: string;
+  surgeonFee: number;
+  assistantFee: number;
+  anesthesiaCharge: number;
+  otCharge: number;
+  nursingCharge: number;
+  consumablesEstimate: number;
+  branch: string;
+  active: boolean;
+  createdBy: string;
+}
+
 export interface SurgeryConsumable {
   id: string;
   caseId: string;

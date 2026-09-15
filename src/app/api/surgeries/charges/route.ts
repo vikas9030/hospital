@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchSurgeryCharges, fetchSurgeryChargesByAdmission, addSurgeryCharge, applyPackageToCase, auditBilling } from "@/lib/ipd-surgery-data";
+import { fetchSurgeryCharges, fetchSurgeryChargesByAdmission, addSurgeryCharge, applyPackageToCase, ensureSurgeryAutoCharges, auditBilling } from "@/lib/ipd-surgery-data";
 
 export async function GET(req: NextRequest) {
   try {
@@ -14,12 +14,21 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// Body: { caseId, label, amount, ... } for a manual component, or
-// { caseId, packageId, applyPackage: true } to expand a package (double-apply guarded).
+// Body: { caseId, label, amount, ... } for a manual component,
+// { caseId, packageId, applyPackage: true } to expand a package (double-apply guarded), or
+// { caseId, autoPrice: true } to fill priced components from the operation rate card.
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     if (!body.caseId) return NextResponse.json({ error: "caseId is required" }, { status: 400 });
+    if (body.autoPrice) {
+      const created = await ensureSurgeryAutoCharges(body.caseId, body.createdBy || "Staff");
+      await auditBilling({
+        actor: body.createdBy || "Staff", action: "SURGERY_AUTO_PRICED",
+        branch: body.branch || "", details: `${created.length} priced component(s) auto-added to surgery ${body.caseId} from the operation rate card.`,
+      });
+      return NextResponse.json(created, { status: 201 });
+    }
     if (body.applyPackage) {
       if (!body.packageId) return NextResponse.json({ error: "packageId is required" }, { status: 400 });
       const created = await applyPackageToCase(body.caseId, body.packageId, body.createdBy || "Staff", body.branch || "");

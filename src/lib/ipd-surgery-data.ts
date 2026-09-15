@@ -3,6 +3,7 @@ import { computeCompleteBill } from "@/lib/ipd-ledger";
 import type {
   Admission, AdmissionCharge, CompleteBill, Invoice, Payment, PaymentAllocation,
   Refund, SurgeryCase, SurgeryCaseCharge, SurgeryConsumable, SurgeryPackage,
+  SurgeryRateCard,
 } from "@/lib/types";
 
 const num = (v: unknown): number => {
@@ -174,6 +175,7 @@ export async function updateAdmission(id: string, patch: Partial<Admission>): Pr
   const clean: Record<string, unknown> = { updated_at: new Date().toISOString() };
   const map: Record<string, string> = {
     admissionNo: "admission_no", doctorName: "doctor_name", department: "department",
+    admissionAt: "admission_at",
     expectedDischargeDate: "expected_discharge_date", dischargeAt: "discharge_at",
     bedId: "bed_id", bedNumber: "bed_number", room: "room", ward: "ward", bedRate: "bed_rate",
     status: "status", billingStatus: "billing_status", payMode: "pay_mode",
@@ -483,6 +485,171 @@ export async function createPackage(p: Partial<SurgeryPackage> & { name: string;
     await supabaseAdmin.from("surgery_package_items").insert(rows).then(({ error: e }) => { if (e) throw e; });
   }
   return (await getPackage(data.id))!;
+}
+
+// ---------- Surgery rate cards (operation price master, 033) ----------
+
+function mapRateCard(r: any): SurgeryRateCard {
+  return {
+    id: r.id, operationName: r.operation_name ?? "", surgeryCategory: r.surgery_category ?? "",
+    surgeonFee: num(r.surgeon_fee), assistantFee: num(r.assistant_fee),
+    anesthesiaCharge: num(r.anesthesia_charge), otCharge: num(r.ot_charge),
+    nursingCharge: num(r.nursing_charge), consumablesEstimate: num(r.consumables_estimate),
+    branch: r.branch ?? "", active: r.active !== false, createdBy: r.created_by ?? "",
+  };
+}
+
+export async function fetchRateCards(branch?: string, activeOnly = false): Promise<SurgeryRateCard[]> {
+  let q = supabaseAdmin.from("surgery_rate_cards").select("*").order("operation_name", { ascending: true });
+  if (branch) q = q.eq("branch", branch);
+  if (activeOnly) q = q.eq("active", true);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data ?? []).map(mapRateCard);
+}
+
+/** Best match for an operation: exact name wins (branch first, then global), else null. */
+export async function findRateCardFor(operationName: string, branch: string): Promise<SurgeryRateCard | null> {
+  const want = (operationName ?? "").trim().toLowerCase();
+  if (!want) return null;
+  const { data, error } = await supabaseAdmin.from("surgery_rate_cards")
+    .select("*").eq("active", true);
+  if (error) throw error;
+  const cards = (data ?? []).map(mapRateCard);
+  const exact = cards.filter((c) => c.operationName.trim().toLowerCase() === want);
+  if (exact.length === 0) return null;
+  return exact.find((c) => (c.branch || "") === (branch || "")) ?? exact.find((c) => !(c.branch || "")) ?? exact[0];
+}
+
+export async function createRateCard(p: Partial<SurgeryRateCard> & { operationName: string; branch: string }): Promise<SurgeryRateCard> {
+  if (!p.operationName.trim()) throw new Error("operationName is required");
+  const { data, error } = await supabaseAdmin.from("surgery_rate_cards").insert({
+    id: p.id || `rtc${Date.now()}`,
+    operation_name: p.operationName.trim(), surgery_category: p.surgeryCategory ?? "",
+    surgeon_fee: num(p.surgeonFee), assistant_fee: num(p.assistantFee),
+    anesthesia_charge: num(p.anesthesiaCharge), ot_charge: num(p.otCharge),
+    nursing_charge: num(p.nursingCharge), consumables_estimate: num(p.consumablesEstimate),
+    branch: p.branch, active: p.active !== false, created_by: p.createdBy ?? "",
+  }).select().single();
+  if (error) throw error;
+  return mapRateCard(data);
+}
+
+export async function updateRateCard(id: string, patch: Partial<SurgeryRateCard>): Promise<SurgeryRateCard> {
+  const clean: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const map: Record<string, string> = {
+    operationName: "operation_name", surgeryCategory: "surgery_category",
+    surgeonFee: "surgeon_fee", assistantFee: "assistant_fee",
+    anesthesiaCharge: "anesthesia_charge", otCharge: "ot_charge",
+    nursingCharge: "nursing_charge", consumablesEstimate: "consumables_estimate",
+    branch: "branch", active: "active",
+  };
+  for (const [k, col] of Object.entries(map)) {
+    const v = (patch as any)[k];
+    if (v !== undefined) clean[col] = k === "operationName" ? String(v).trim() : v;
+  }
+  const { data, error } = await supabaseAdmin.from("surgery_rate_cards").update(clean).eq("id", id).select().single();
+  if (error) throw error;
+  return mapRateCard(data);
+}
+
+// ---------- Surgery auto-pricing ----------
+
+const AUTO_BED_NOTE = "Auto: bed accrual";
+
+/**
+ * Ensure priced components exist for a case, add-by-add, from its rate card:
+ * surgeon / assistant / anesthesia / OT / nursing — each as its own auto
+ * charge line. Already-present labels are skipped, so re-runs only fill gaps
+ * (e.g. surgeon assigned later). Returns the newly added lines.
+ */
+export async function ensureSurgeryAutoCharges(caseId: string, actor: string): Promise<SurgeryCaseCharge[]> {
+  const surgery = await getSurgery(caseId);
+  if (!surgery) throw new Error("Surgery case not found.");
+  const card = await findRateCardFor(surgery.surgeryName, surgery.branch);
+  if (!card) return [];
+  const existing = await fetchSurgeryCharges(caseId);
+  const has = (label: string) => existing.some((c) => c.auto && c.label.toLowerCase() === label.toLowerCase());
+  const wants: { label: string; category: string; amount: number; gate: boolean }[] = [
+    { label: `${card.operationName} — surgeon fee${surgery.surgeon ? ` (${surgery.surgeon})` : ""}`, category: "Surgeon", amount: card.surgeonFee, gate: !!surgery.surgeon },
+    { label: `${card.operationName} — assistant fee${surgery.assistantSurgeon ? ` (${surgery.assistantSurgeon})` : ""}`, category: "Assistant", amount: card.assistantFee, gate: !!surgery.assistantSurgeon },
+    { label: `${card.operationName} — anesthesia (${surgery.anesthesiaType || "charge"})`, category: "Anesthesia", amount: card.anesthesiaCharge, gate: !!surgery.anesthesiaType },
+    { label: `${card.operationName} — OT / theatre${surgery.theatre ? ` (${surgery.theatre})` : ""}`, category: "Operation Theatre", amount: card.otCharge, gate: true },
+    { label: `${card.operationName} — OT nursing`, category: "Nursing", amount: card.nursingCharge, gate: true },
+  ];
+  const out: SurgeryCaseCharge[] = [];
+  for (const w of wants) {
+    if (!w.gate || w.amount <= 0 || has(w.label)) continue;
+    out.push(await addSurgeryCharge({
+      caseId, admissionId: surgery.admissionId, label: w.label,
+      category: w.category, amount: w.amount, auto: true,
+      createdBy: actor, branch: surgery.branch,
+    }));
+  }
+  return out;
+}
+
+// ---------- Bed accrual (admission dates → bill amounts) ----------
+
+function stayEndOf(a: Admission): string {
+  const iso = (a.dischargeAt || "").split("T")[0]
+    || (a.expectedDischargeDate || "").split("T")[0]
+    || new Date().toISOString().split("T")[0];
+  return iso;
+}
+
+function stayDaysOf(a: Admission): number {
+  const start = (a.admissionAt || "").split("T")[0];
+  const end = stayEndOf(a);
+  const [y1, m1, d1] = start.split("-").map(Number);
+  const [y2, m2, d2] = end.split("-").map(Number);
+  if (!y1 || !m1 || !d1 || !y2 || !m2 || !d2) return 1;
+  const diff = Math.floor((new Date(y2, m2 - 1, d2).getTime() - new Date(y1, m1 - 1, d1).getTime()) / 86400000);
+  return Math.max(1, diff + 1);
+}
+
+/**
+ * Keep the bill in step with admission dates + bed rate: unbilled auto bed
+ * rows are rebuilt from joining → leave × rate, so extending the leave date
+ * (or changing the rate) automatically adds the amount to the bill.
+ * Manual Bed charges and already-billed rows are never touched.
+ */
+export async function syncBedCharges(admissionId: string): Promise<{ days: number; rate: number; amount: number }> {
+  const admission = await getAdmission(admissionId);
+  if (!admission) throw new Error("Admission not found.");
+  const days = stayDaysOf(admission);
+  const rate = num((admission as Admission).bedRate);
+  // Billed history stays locked; only the unbilled auto rows are rebuilt.
+  const { data: billedRows } = await supabaseAdmin.from("admission_charges")
+    .select("quantity").eq("admission_id", admissionId).eq("category", "Bed").eq("billed", true);
+  const billedDays = (billedRows ?? []).reduce((s: number, r: any) => s + (num(r.quantity) || 0), 0);
+  await supabaseAdmin.from("admission_charges")
+    .delete().eq("admission_id", admissionId).eq("category", "Bed")
+    .eq("billed", false).eq("notes", AUTO_BED_NOTE);
+  const remaining = Math.max(0, days - billedDays);
+  if (remaining > 0 && rate > 0) {
+    const amount = remaining * rate;
+    await supabaseAdmin.from("admission_charges").insert({
+      id: `chg${Date.now()}`,
+      admission_id: admissionId, patient_id: admission.patientId,
+      category: "Bed",
+      description: `Bed ${admission.bedNumber || ""} ${admission.ward ? `(${admission.ward})` : ""} • ${(admission.admissionAt || "").split("T")[0]} → ${stayEndOf(admission)} (${remaining}d × ₹${rate})`.trim(),
+      quantity: remaining, rate, amount, discount: 0, tax: 0, net: amount,
+      billed: false,
+      occurred_at: new Date().toISOString(),
+      created_by: "System (auto accrual)", branch: admission.branch, notes: AUTO_BED_NOTE,
+    }).then(({ error: e }) => { if (e) throw e; });
+  }
+  return { days, rate, amount: remaining * rate };
+}
+
+/** Delete one UNBILLED admission charge (corrections need Admin). Billed history is locked. */
+export async function deleteAdmissionCharge(id: string): Promise<void> {
+  const { data: row, error } = await supabaseAdmin.from("admission_charges").select("billed").eq("id", id).single();
+  if (error || !row) throw new Error("Charge not found.");
+  if ((row as any).billed) throw new Error("Billed charges are locked in history and cannot be deleted.");
+  const { error: delErr } = await supabaseAdmin.from("admission_charges").delete().eq("id", id);
+  if (delErr) throw delErr;
 }
 
 // ---------- Consumables (stock deducted only on issue) ----------

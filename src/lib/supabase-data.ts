@@ -1700,7 +1700,7 @@ export async function getDatabaseStatus(): Promise<DatabaseStatus> {
   };
 
   const coreTables = ["patients", "doctors", "appointments", "invoices", "medicines", "lab_tests", "radiology_orders", "medical_records", "users", "staff"];
-  const newTables = ["app_settings", "doctor_branch_schedules", "patient_logins", "prescriptions", "prescription_items", "appointment_requests", "razorpay_payments", "audit_logs", "appointment_reminders", "expenses", "departments", "staff_attendance", "invoice_items", "invoice_taxes", "medicine_alerts", "beds", "inventory", "insurance_claims", "leads", "campaigns", "notifications", "admissions", "admission_charges", "payments", "payment_allocations", "refunds", "surgery_cases", "surgery_case_charges", "surgery_packages", "surgery_package_items", "surgery_consumables"];
+  const newTables = ["app_settings", "doctor_branch_schedules", "patient_logins", "prescriptions", "prescription_items", "appointment_requests", "razorpay_payments", "audit_logs", "appointment_reminders", "expenses", "departments", "staff_attendance", "invoice_items", "invoice_taxes", "medicine_alerts", "beds", "inventory", "insurance_claims", "leads", "campaigns", "notifications", "admissions", "admission_charges", "payments", "payment_allocations", "refunds", "surgery_cases", "surgery_case_charges", "surgery_packages", "surgery_package_items", "surgery_consumables", "surgery_rate_cards"];
   for (const t of [...coreTables, ...newTables]) await checkTable(t);
   const columnChecks: [string, string][] = [
     ["lab_tests", "findings"], ["lab_tests", "problems"],
@@ -1742,6 +1742,7 @@ export async function getDatabaseStatus(): Promise<DatabaseStatus> {
     { file: "030_attendance_network.sql", label: "WiFi-gated attendance (device IP + on-network proof — auto-fallback if red)", ok: true, missing: [] },
     { file: "031_admissions_billing_ledger.sql", label: "IPD admissions + charges + payments/advances + refunds + invoice links", ok: missingTables("admissions", "admission_charges", "payments", "payment_allocations", "refunds").length === 0, missing: missingTables("admissions", "admission_charges", "payments", "payment_allocations", "refunds") },
     { file: "032_surgery_operations.sql", label: "Surgery cases + charges + packages + OT consumables", ok: missingTables("surgery_cases", "surgery_case_charges", "surgery_packages", "surgery_package_items", "surgery_consumables").length === 0, missing: missingTables("surgery_cases", "surgery_case_charges", "surgery_packages", "surgery_package_items", "surgery_consumables") },
+    { file: "033_surgery_rate_cards.sql", label: "Operation price master (auto-priced surgery components)", ok: missingTables("surgery_rate_cards").length === 0, missing: missingTables("surgery_rate_cards") },
   ];
   return { tables, columns, migrations };
 }
