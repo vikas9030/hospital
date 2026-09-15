@@ -279,7 +279,7 @@ export function BedsModule() {
 }
 
 // ===== Admission (IPD) =====
-function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: boolean; onOpenChange: (v: boolean) => void; preselectedBed?: Bed }) {
+function NewAdmissionDialog({ open, onOpenChange, preselectedBed, preselectedPatientId }: { open: boolean; onOpenChange: (v: boolean) => void; preselectedBed?: Bed; preselectedPatientId?: string }) {
   const { toast } = useToast();
   const updateBed = useAppStore((s) => s.updateBed);
   const updatePatient = useAppStore((s) => s.updatePatient);
@@ -289,7 +289,7 @@ function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: bool
   const availableBeds = beds.filter((b) => b.status === "Available");
   const admittablePatients = patients.filter((p) => p.status !== "Admitted" && p.status !== "Discharged");
   const [form, setForm] = useState(() => ({
-    patientId: "",
+    patientId: preselectedPatientId ?? "",
     doctorName: "",
     department: "",
     bedId: preselectedBed?.id ?? "",
@@ -390,10 +390,12 @@ function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: bool
       }
       // Mirror into the admissions ledger (031): one billing account per admission.
       // Best-effort — bed assignment above is the source of truth for the map.
+      // Open day-care surgeries auto-link server-side (visible in Surgery + bill).
+      let linkedNote = "";
       try {
         const currentUserName = useAppStore.getState().currentUser?.name ?? "";
         const activeBranch = useAppStore.getState().activeBranch;
-        await fetch("/api/admissions", {
+        const admRes = await fetch("/api/admissions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -415,8 +417,10 @@ function NewAdmissionDialog({ open, onOpenChange, preselectedBed }: { open: bool
             createdBy: currentUserName,
           }),
         });
+        const admBody = admRes.ok ? await admRes.json().catch(() => ({})) : {};
+        if (admBody?.linkedSurgeries > 0) linkedNote = ` ${admBody.linkedSurgeries} open surgery case(s) linked.`;
       } catch { /* ledger mirror is best-effort */ }
-      toast({ title: "Admitted", description: `${selectedPatient?.name} admitted to bed ${savedBed.number} (${savedBed.ward})${savedBed.department ? ` • ${savedBed.department}` : ""}.` });
+      toast({ title: "Admitted", description: `${selectedPatient?.name} admitted to bed ${savedBed.number} (${savedBed.ward})${savedBed.department ? ` • ${savedBed.department}` : ""}.${linkedNote} Visible in IPD, Surgery and Billing.` });
       onOpenChange(false);
     } catch (e: any) {
       toast({ title: "Could not admit patient", description: e.message, variant: "destructive" });
@@ -779,6 +783,7 @@ export function OPDModule() {
   const { appointments, patients, doctors, invoices, branch } = useBranchData();
   const { toast } = useToast();
   const [newOPDOpen, setNewOPDOpen] = useState(false);
+  const [admitPatientId, setAdmitPatientId] = useState<string | null>(null);
   const showAdd = canAddPatient(currentUser.role);
   const settings = useAppStore((s) => s.settings);
   const opdTarget = parseInt(branchSetting(settings, branch, "capacity_OPD") ?? "0") || 0;
@@ -893,6 +898,7 @@ export function OPDModule() {
                   <TableHead>Time</TableHead>
                   <TableHead className="text-right">Fee</TableHead>
                    <TableHead>Status</TableHead>
+                   {showEdit && <TableHead className="w-[90px]">Admit</TableHead>}
                   </TableRow>
                </TableHeader>
                <TableBody>
@@ -904,33 +910,45 @@ export function OPDModule() {
                      <TableCell className="hidden lg:table-cell text-xs text-muted-foreground">{apt.department}</TableCell>
                      <TableCell className="text-sm">{apt.time}</TableCell>
                      <TableCell className="text-right text-sm font-medium">{feeFor(apt) > 0 ? `₹${feeFor(apt).toLocaleString("en-IN")}` : "—"}</TableCell>
-                     <TableCell>
-                       {showEdit ? (
-                         <div onClick={(e) => e.stopPropagation()}>
-                           <Select value={apt.status} onValueChange={(v) => handleStatusChange(apt.id, v)}>
-                             <SelectTrigger className="h-7 w-[130px] text-xs border-0 bg-transparent px-2 shadow-none"><SelectValue /></SelectTrigger>
-                             <SelectContent>{["Scheduled", "Checked-in", "In Consultation", "Completed", "Cancelled", "No-show", "Follow Up"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
-                           </Select>
-                         </div>
-                       ) : (
-                         <StatusBadge status={apt.status} />
-                       )}
-                     </TableCell>
-                   </TableRow>
-                 ))}
-                  {dateApts.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={7} className="text-center py-10 text-sm text-muted-foreground">
-                        No OPD visits on {selectedDate}. Use “New OPD Visit” to register a walk-in.
+                      <TableCell>
+                        {showEdit ? (
+                          <div onClick={(e) => e.stopPropagation()}>
+                            <Select value={apt.status} onValueChange={(v) => handleStatusChange(apt.id, v)}>
+                              <SelectTrigger className="h-7 w-[130px] text-xs border-0 bg-transparent px-2 shadow-none"><SelectValue /></SelectTrigger>
+                              <SelectContent>{["Scheduled", "Checked-in", "In Consultation", "Completed", "Cancelled", "No-show", "Follow Up"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+                            </Select>
+                          </div>
+                        ) : (
+                          <StatusBadge status={apt.status} />
+                        )}
                       </TableCell>
+                      {showEdit && (
+                        <TableCell>
+                          <Button
+                            size="sm" variant="outline" className="h-7 text-[11px]"
+                            title="Admit to IPD — creates the admission visible in IPD, Surgery and Billing"
+                            onClick={(e) => { e.stopPropagation(); setAdmitPatientId(apt.patientId); }}
+                          >
+                            Admit
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
-                 )}
+                  ))}
+                   {dateApts.length === 0 && (
+                     <TableRow>
+                       <TableCell colSpan={showEdit ? 8 : 7} className="text-center py-10 text-sm text-muted-foreground">
+                         No OPD visits on {selectedDate}. Use “New OPD Visit” to register a walk-in.
+                       </TableCell>
+                     </TableRow>
+                  )}
                </TableBody>
              </Table>
            </div>
          </CardContent>
        </Card>
       {newOPDOpen && <NewOPDDialog key={selectedDate} open presetDate={selectedDate} onOpenChange={(v) => { if (!v) setNewOPDOpen(false); }} />}
+      {admitPatientId && <NewAdmissionDialog open onOpenChange={(v) => { if (!v) setAdmitPatientId(null); }} preselectedPatientId={admitPatientId} />}
     </div>
   );
 }

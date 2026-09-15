@@ -334,13 +334,47 @@ export async function getCompleteBill(admissionId: string): Promise<CompleteBill
 
 // ---------- Surgeries ----------
 
-export async function fetchSurgeries(branch?: string, status?: string): Promise<SurgeryCase[]> {
-  let q = supabaseAdmin.from("surgery_cases").select("*").order("planned_date", { ascending: true });
+export async function fetchSurgeries(branch?: string, status?: string, admissionId?: string): Promise<SurgeryCase[]> {
+  let q = supabaseAdmin.from("surgery_cases").select("*").order("planned_date", { ascending: false }).order("planned_time", { ascending: false });
   if (branch) q = q.eq("branch", branch);
   if (status) q = q.eq("status", status);
+  if (admissionId) q = q.eq("admission_id", admissionId);
   const { data, error } = await q;
   if (error) throw error;
   return (data ?? []).map(mapSurgery);
+}
+
+/**
+ * Day-care surgery admitted later: attach every open (non-terminal) case of
+ * this patient to the new admission, and carry their unbilled charge lines
+ * along — so one admission shows in Surgery, IPD and the single bill.
+ */
+export async function linkOpenSurgeriesToAdmission(admissionId: string): Promise<number> {
+  const admission = await getAdmission(admissionId);
+  if (!admission) return 0;
+  const { data, error } = await supabaseAdmin.from("surgery_cases")
+    .select("id").eq("branch", admission.branch).eq("patient_id", admission.patientId)
+    .is("admission_id", null)
+    .not("status", "in", "(Completed,Post-op,Discharged,Cancelled)");
+  if (error) throw error;
+  const ids = (data ?? []).map((r: any) => r.id);
+  if (ids.length === 0) return 0;
+  const now = new Date().toISOString();
+  const { error: upErr } = await supabaseAdmin.from("surgery_cases").update({
+    admission_id: admissionId,
+    bed_number: admission.bedNumber || undefined,
+    room: (admission as Admission).room || undefined,
+    updated_at: now,
+  }).in("id", ids);
+  if (upErr) throw upErr;
+  // Unbilled component lines follow the case into the admission bill.
+  await supabaseAdmin.from("surgery_case_charges").update({ admission_id: admissionId })
+    .in("case_id", ids).eq("billed", false).is("admission_id", null);
+  // Issued-but-unbilled consumable charges reference the admission ledger.
+  await supabaseAdmin.from("admission_charges").update({ admission_id: admissionId })
+    .eq("branch", admission.branch).eq("patient_id", admission.patientId)
+    .is("admission_id", null).eq("billed", false);
+  return ids.length;
 }
 
 export async function getSurgery(id: string): Promise<SurgeryCase | null> {

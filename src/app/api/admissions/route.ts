@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchAdmissions, createAdmission, updateAdmission, syncBedCharges, auditBilling } from "@/lib/ipd-surgery-data";
+import { fetchAdmissions, createAdmission, updateAdmission, syncBedCharges, linkOpenSurgeriesToAdmission, auditBilling } from "@/lib/ipd-surgery-data";
 
 export async function GET(req: NextRequest) {
   try {
@@ -24,12 +24,18 @@ export async function POST(req: NextRequest) {
       const s = await syncBedCharges(created.id);
       accrual = ` Day-1 bed accrual ₹${s.amount.toLocaleString("en-IN")} (${s.days}d × ₹${s.rate}).`;
     } catch { /* bed rate may be zero — accrual skipped */ }
+    // Day-care surgeries booked earlier auto-join this admission (Surgery +
+    // IPD + bill stay one connected record, whichever module added first).
+    let linked = 0;
+    try {
+      linked = await linkOpenSurgeriesToAdmission(created.id);
+    } catch { /* best-effort */ }
     await auditBilling({
       actor: body.createdBy || "Staff", action: "ADMISSION_CREATED", branch: created.branch,
       patientId: created.patientId, admissionId: created.id,
-      details: `Admission ${created.admissionNo} opened for ${created.patientName} (bed ${created.bedNumber || "—"}).${accrual}`,
+      details: `Admission ${created.admissionNo} opened for ${created.patientName} (bed ${created.bedNumber || "—"}).${accrual}${linked > 0 ? ` ${linked} open surgery case(s) linked.` : ""}`,
     });
-    return NextResponse.json(created, { status: 201 });
+    return NextResponse.json({ ...created, linkedSurgeries: linked }, { status: 201 });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

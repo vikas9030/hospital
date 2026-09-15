@@ -254,12 +254,17 @@ export function printRefund(refund: Refund, settings: Record<string, string> = {
 }
 
 // ===== Complete IPD bill (admission ledger: charges + payments + refunds) =====
-export function buildCompleteBillHtml(bill: CompleteBill, settings: Record<string, string> = {}): ReportDoc {
+// surgeryPending: unbilled surgery/OT lines for this admission — printed as a
+// "joins the Final bill" section so the paper bill shows beds + surgery together.
+export function buildCompleteBillHtml(bill: CompleteBill, settings: Record<string, string> = {}, surgeryPending: { label: string; amount: number }[] = []): ReportDoc {
   const { b, accent } = brandingOf(settings);
   const a: Admission = bill.admission;
   const chargeRows = bill.charges.length
     ? bill.charges.map((c, i) => `<tr><td>${i + 1}. ${esc(c.description)}</td><td style="text-align:center">${esc(c.category)}</td><td style="text-align:center">${c.quantity ?? 1}</td><td style="text-align:right">₹${(c.rate ?? 0).toLocaleString("en-IN")}</td><td style="text-align:right">₹${(c.net ?? 0).toLocaleString("en-IN")}</td></tr>`).join("")
     : `<tr><td colspan="5" style="text-align:center;color:#888">No charges recorded</td></tr>`;
+  const surgPendingRows = surgeryPending.length > 0
+    ? `<h2>Pending Surgery / OT (joins the Final bill)</h2><table><thead><tr><th>Component</th><th style="text-align:right">Amount</th></tr></thead><tbody>${surgeryPending.map((s) => `<tr><td>${esc(s.label)}</td><td style="text-align:right">₹${s.amount.toLocaleString("en-IN")}</td></tr>`).join("")}</tbody></table>`
+    : "";
   const ledgerRows = bill.ledger.length
     ? bill.ledger.map((l) => `<tr><td>${esc((l.date || "").split("T")[0])}</td><td>${esc(l.type)}</td><td>${esc(l.description)}</td><td style="text-align:right">${l.debit > 0 ? `₹${l.debit.toLocaleString("en-IN")}` : "—"}</td><td style="text-align:right">${l.credit > 0 ? `₹${l.credit.toLocaleString("en-IN")}` : "—"}</td><td style="text-align:right"><strong>₹${l.balance.toLocaleString("en-IN")}</strong></td></tr>`).join("")
     : `<tr><td colspan="6" style="text-align:center;color:#888">No ledger entries</td></tr>`;
@@ -280,6 +285,7 @@ export function buildCompleteBillHtml(bill: CompleteBill, settings: Record<strin
     </div>
     <h2>Charges (${bill.charges.length})</h2>
     <table><thead><tr><th>Charge</th><th style="text-align:center">Category</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Net</th></tr></thead><tbody>${chargeRows}</tbody></table>
+    ${surgPendingRows}
     ${catRows ? `<h2>Category Totals</h2>${catRows}` : ""}
     <h2>Running Ledger</h2>
     <table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th style="text-align:right">Debit</th><th style="text-align:right">Credit</th><th style="text-align:right">Balance</th></tr></thead><tbody>${ledgerRows}</tbody></table>
@@ -297,8 +303,8 @@ export function buildCompleteBillHtml(bill: CompleteBill, settings: Record<strin
   return toDoc(`IPD Bill ${a.admissionNo || a.id}`, body, accent);
 }
 
-export function printCompleteBill(bill: CompleteBill, settings: Record<string, string> = {}): boolean {
-  const doc = buildCompleteBillHtml(bill, settings);
+export function printCompleteBill(bill: CompleteBill, settings: Record<string, string> = {}, surgeryPending: { label: string; amount: number }[] = []): boolean {
+  const doc = buildCompleteBillHtml(bill, settings, surgeryPending);
   return openPrintWindow(doc.title, doc.body, doc.accent);
 }
 

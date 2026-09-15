@@ -16,7 +16,7 @@ import { useBranchData } from "@/hooks/use-branch-data";
 import { canCollectPayment, canCreateInvoice, isAdmin } from "@/lib/utils";
 import { printCompleteBill, printReceipt, printRefund } from "@/lib/documents";
 import { printInvoice } from "@/lib/invoice-print";
-import type { Admission, CompleteBill, Payment, Refund, SurgeryCaseCharge } from "@/lib/types";
+import type { Admission, CompleteBill, Payment, Refund, SurgeryCase, SurgeryCaseCharge } from "@/lib/types";
 import { Printer, Plus, Wallet, Undo2, FileCheck } from "lucide-react";
 import { TaxLinesEditor, type EditableTaxLine } from "@/components/modules/billing";
 import { calcInvoiceTotals } from "@/lib/billing";
@@ -33,6 +33,8 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
   const [selectedId, setSelectedId] = useState("");
   const [bill, setBill] = useState<CompleteBill | null>(null);
   const [surgeryCharges, setSurgeryCharges] = useState<SurgeryCaseCharge[]>([]);
+  const [linkedCases, setLinkedCases] = useState<SurgeryCase[]>([]);
+  const goModule = useAppStore((s) => s.setActiveModule);
   const [loading, setLoading] = useState(false);
   const [chargeOpen, setChargeOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
@@ -81,15 +83,18 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
     if (!id) return;
     setLoading(true);
     try {
-      const [billRes, surgRes] = await Promise.all([
+      const [billRes, surgRes, casesRes] = await Promise.all([
         fetch(`/api/billing/complete-bill?admissionId=${encodeURIComponent(id)}`),
         fetch(`/api/surgeries/charges?admissionId=${encodeURIComponent(id)}`),
+        fetch(`/api/surgeries?admissionId=${encodeURIComponent(id)}`),
       ]);
       const data = await billRes.json();
       if (!billRes.ok) throw new Error(data.error || "Failed.");
       setBill(data);
       const surg = surgRes.ok ? await surgRes.json() : [];
       setSurgeryCharges(Array.isArray(surg) ? surg : []);
+      const linked = casesRes.ok ? await casesRes.json() : [];
+      setLinkedCases(Array.isArray(linked) ? linked : []);
     } catch (e: any) {
       toast({ title: "Bill load failed", description: e.message, variant: "destructive" });
     }
@@ -159,7 +164,7 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
               {canCollect && <Button size="sm" variant="outline" onClick={() => setPayOpen(true)}><Wallet className="h-3.5 w-3.5 mr-1.5" /> Collect / Advance</Button>}
               {canCollect && <Button size="sm" variant="outline" onClick={() => setRefundOpen(true)}><Undo2 className="h-3.5 w-3.5 mr-1.5" /> Refund</Button>}
               {canCharge && <Button size="sm" variant="outline" onClick={() => setFinalizeOpen(true)}><FileCheck className="h-3.5 w-3.5 mr-1.5" /> Finalize Bill</Button>}
-              <Button size="sm" variant="outline" onClick={() => printCompleteBill(bill, settings)}><Printer className="h-3.5 w-3.5 mr-1.5" /> Print Ledger</Button>
+              <Button size="sm" variant="outline" onClick={() => printCompleteBill(bill, settings, surgeryCharges.filter((c) => !c.billed).map((c) => ({ label: c.label, amount: c.amount })))}><Printer className="h-3.5 w-3.5 mr-1.5" /> Print Ledger</Button>
             </div>
             {bill.charges.length > 0 && (
               <div className="space-y-1.5">
@@ -211,6 +216,17 @@ export function IPDBillingPanel({ compact = false }: { compact?: boolean }) {
                 <p className="text-[11px] text-muted-foreground">
                   Unbilled surgery/OT total ₹{surgeryCharges.filter((c) => !c.billed).reduce((s, c) => s + (c.amount || 0), 0).toLocaleString("en-IN")} rolls into Finalize Bill together with ward charges.
                 </p>
+              </div>
+            )}
+            {linkedCases.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold text-muted-foreground">LINKED SURGERIES ({linkedCases.length}) — same record, Surgery module</p>
+                {linkedCases.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between rounded-lg border px-3 py-2 text-xs gap-2">
+                    <span className="min-w-0">{c.caseNo} • {c.surgeryName} ({c.surgeon || "TBD"}) <Badge variant="outline" className="text-[10px] ml-1">{c.status}</Badge></span>
+                    <Button size="sm" variant="ghost" className="h-7 text-[11px] shrink-0" onClick={() => goModule("surgery")}>Open in Surgery →</Button>
+                  </div>
+                ))}
               </div>
             )}
             {bill.invoices.length > 0 && (

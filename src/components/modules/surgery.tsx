@@ -304,11 +304,23 @@ function CaseDetailDialog({ surgery, onClose, onUpdated }: { surgery: SurgeryCas
   const [consumableForm, setConsumableForm] = useState({ item: "", quantity: "1", unitPrice: "" });
   const [team, setTeam] = useState({ surgeon: surgery?.surgeon ?? "", assistantSurgeon: surgery?.assistantSurgeon ?? "", anesthesiaType: surgery?.anesthesiaType ?? "", theatre: surgery?.theatre ?? "" });
   const [teamSaving, setTeamSaving] = useState(false);
+  const [linkedAdmission, setLinkedAdmission] = useState<{ admissionNo: string; status: string; billingStatus: string } | null>(null);
+  const goModule = useAppStore((s) => s.setActiveModule);
 
   useEffect(() => {
     if (!surgery) return;
     setStatus(surgery.status);
     setTeam({ surgeon: surgery.surgeon ?? "", assistantSurgeon: surgery.assistantSurgeon ?? "", anesthesiaType: surgery.anesthesiaType ?? "", theatre: surgery.theatre ?? "" });
+    setLinkedAdmission(null);
+    if (surgery.admissionId) {
+      fetch(`/api/admissions?branch=${encodeURIComponent(surgery.branch)}`)
+        .then((r) => (r.ok ? r.json() : []))
+        .then((d) => {
+          const m = Array.isArray(d) ? d.find((a: { id?: string }) => a.id === surgery.admissionId) : null;
+          if (m) setLinkedAdmission({ admissionNo: m.admissionNo, status: m.status, billingStatus: m.billingStatus });
+        })
+        .catch(() => {});
+    }
     (async () => {
       const [ch, co] = await Promise.all([
         fetch(`/api/surgeries/charges?caseId=${encodeURIComponent(surgery.id)}`).then((r) => r.json()).catch(() => []),
@@ -463,6 +475,16 @@ function CaseDetailDialog({ surgery, onClose, onUpdated }: { surgery: SurgeryCas
           <DialogTitle>{surgery.caseNo} — {surgery.surgeryName}</DialogTitle>
           <DialogDescription>{surgery.patientName} • {surgery.plannedDate} {surgery.plannedTime} • {surgery.theatre || "OT TBD"}</DialogDescription>
         </DialogHeader>
+        {surgery.admissionId && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs">
+            {linkedAdmission ? (
+              <span>Admission <strong>{linkedAdmission.admissionNo}</strong> • {linkedAdmission.status} • {linkedAdmission.billingStatus}</span>
+            ) : (
+              <span className="text-muted-foreground">Linked admission — loading…</span>
+            )}
+            <Button size="sm" variant="outline" className="h-7 text-[11px] ml-auto" onClick={() => { onClose(); goModule("billing"); }}>Open in Billing →</Button>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2 py-2">
           <Select value={status} onValueChange={(v) => updateStatus(v as SurgeryCase["status"])}>
             <SelectTrigger className="h-8 w-[160px] text-xs"><SelectValue /></SelectTrigger>

@@ -5,7 +5,8 @@ export async function GET(req: NextRequest) {
   try {
     const branch = req.nextUrl.searchParams.get("branch") ?? undefined;
     const status = req.nextUrl.searchParams.get("status") ?? undefined;
-    return NextResponse.json(await fetchSurgeries(branch, status));
+    const admissionId = req.nextUrl.searchParams.get("admissionId") ?? undefined;
+    return NextResponse.json(await fetchSurgeries(branch, status, admissionId));
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
